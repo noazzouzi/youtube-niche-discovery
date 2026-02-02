@@ -18,6 +18,7 @@ from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timedelta
 from pytrends.request import TrendReq
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 # Configure logging
 logging.basicConfig(
@@ -230,6 +231,298 @@ class TrendsAPI:
                 return min(score + random.randint(-5, 10), 100)
         
         return random.randint(40, 60)
+
+class ChannelDiscovery:
+    """Discover and score Rising Star channels in a niche"""
+    
+    def __init__(self, youtube_api: 'YouTubeAPI', cache: APICache):
+        self.youtube_api = youtube_api
+        self.cache = cache
+        logger.info("ChannelDiscovery initialized")
+    
+    def find_rising_star_channels(self, niche: str, max_results: int = 20) -> dict:
+        """Find rising star channels in a niche"""
+        logger.info(f"Finding rising star channels for: {niche}")
+        start_time = time.time()
+        
+        try:
+            # Step 1: Search for channels in the niche
+            search_results = self._search_channels(niche, max_results)
+            if not search_results:
+                return self._empty_response(niche, "No search results found")
+            
+            # Step 2: Get channel statistics for found channels
+            channel_ids = [item['id']['channelId'] for item in search_results 
+                          if item['id']['kind'] == 'youtube#channel']
+            
+            if not channel_ids:
+                return self._empty_response(niche, "No channels found in search")
+            
+            # Limit to first 10 channels to avoid API quotas
+            channel_ids = channel_ids[:10]
+            channel_stats = self._get_channel_statistics(channel_ids)
+            
+            if not channel_stats:
+                return self._empty_response(niche, "Could not retrieve channel statistics")
+            
+            # Step 3: Calculate rising star scores and format results
+            rising_stars = []
+            for channel_data in channel_stats:
+                try:
+                    channel_info = self._calculate_rising_star_score(channel_data)
+                    if channel_info['rising_star_score'] >= 50:  # Minimum threshold
+                        rising_stars.append(channel_info)
+                except Exception as e:
+                    logger.warning(f"Error processing channel {channel_data.get('id', 'unknown')}: {e}")
+                    continue
+            
+            # Sort by rising star score
+            rising_stars.sort(key=lambda x: x['rising_star_score'], reverse=True)
+            
+            # Take top 10
+            top_rising_stars = rising_stars[:10]
+            
+            analysis_time = time.time() - start_time
+            
+            return {
+                'niche': niche,
+                'channels': top_rising_stars,
+                'analysis': {
+                    'total_channels_found': len(channel_ids),
+                    'rising_stars_identified': len(top_rising_stars),
+                    'best_opportunity': top_rising_stars[0]['name'] if top_rising_stars else None,
+                    'analysis_time': round(analysis_time, 2)
+                },
+                'success': True
+            }
+            
+        except Exception as e:
+            logger.error(f"Channel discovery error for {niche}: {e}")
+            return self._empty_response(niche, f"Error: {str(e)}")
+    
+    def _search_channels(self, niche: str, max_results: int) -> Optional[List[dict]]:
+        """Search for channels in the niche"""
+        cache_key = self.cache._generate_key('channel_search', {
+            'niche': niche,
+            'max_results': max_results
+        })
+        
+        # Try cache first
+        cached_result = self.cache.get(cache_key)
+        if cached_result:
+            logger.debug(f"Using cached channel search for: {niche}")
+            return cached_result.get('items', [])
+        
+        # Search for channels specifically
+        params = {
+            'part': 'snippet',
+            'q': niche,
+            'maxResults': max_results,
+            'type': 'channel',
+            'key': self.youtube_api.api_key,
+            'order': 'relevance'
+        }
+        url = f"{self.youtube_api.base_url}/search?" + urllib.parse.urlencode(params)
+        
+        try:
+            logger.info(f"Searching for channels: {niche}")
+            with urllib.request.urlopen(url, timeout=15) as response:
+                result = json.loads(response.read().decode())
+            
+            self.youtube_api.call_count += 1
+            
+            # Cache the result (1 hour TTL)
+            self.cache.set(cache_key, result)
+            
+            return result.get('items', [])
+            
+        except Exception as e:
+            logger.error(f"Channel search error for '{niche}': {e}")
+            return None
+    
+    def _get_channel_statistics(self, channel_ids: List[str]) -> Optional[List[dict]]:
+        """Get detailed statistics for channels"""
+        if not channel_ids:
+            return None
+        
+        cache_key = self.cache._generate_key('channel_stats', {
+            'channel_ids': sorted(channel_ids)
+        })
+        
+        # Try cache first
+        cached_result = self.cache.get(cache_key)
+        if cached_result:
+            logger.debug(f"Using cached channel stats for {len(channel_ids)} channels")
+            return cached_result.get('items', [])
+        
+        # Get channel statistics
+        params = {
+            'part': 'statistics,snippet',
+            'id': ','.join(channel_ids),
+            'key': self.youtube_api.api_key
+        }
+        url = f"{self.youtube_api.base_url}/channels?" + urllib.parse.urlencode(params)
+        
+        try:
+            logger.info(f"Getting statistics for {len(channel_ids)} channels")
+            with urllib.request.urlopen(url, timeout=15) as response:
+                result = json.loads(response.read().decode())
+            
+            self.youtube_api.call_count += 1
+            
+            # Cache the result (1 hour TTL)
+            self.cache.set(cache_key, result)
+            
+            return result.get('items', [])
+            
+        except Exception as e:
+            logger.error(f"Channel statistics error: {e}")
+            return None
+    
+    def _calculate_rising_star_score(self, channel_data: dict) -> dict:
+        """Calculate rising star score for a channel"""
+        snippet = channel_data.get('snippet', {})
+        stats = channel_data.get('statistics', {})
+        
+        # Extract data
+        channel_id = channel_data.get('id', '')
+        name = snippet.get('title', 'Unknown Channel')
+        description = snippet.get('description', '')
+        published_at = snippet.get('publishedAt', '')
+        
+        # Convert string stats to integers
+        subscribers = int(stats.get('subscriberCount', 0))
+        total_views = int(stats.get('viewCount', 0))
+        video_count = int(stats.get('videoCount', 0))
+        
+        # Calculate channel age
+        created_date = datetime.fromisoformat(published_at.replace('Z', '+00:00'))
+        channel_age_days = (datetime.now(created_date.tzinfo) - created_date).days
+        channel_age_years = channel_age_days / 365.25
+        
+        # Calculate Rising Star Score components
+        
+        # 1. Views per subscriber (viral potential) - max 40 points
+        views_per_sub = total_views / max(subscribers, 1)
+        # More generous viral scoring: 50 views/sub = 10pts, 100 = 20pts, 200+ = 30+pts
+        if views_per_sub >= 300:
+            viral_score = 40
+        elif views_per_sub >= 200:
+            viral_score = 35
+        elif views_per_sub >= 150:
+            viral_score = 30
+        elif views_per_sub >= 100:
+            viral_score = 25
+        elif views_per_sub >= 75:
+            viral_score = 20
+        elif views_per_sub >= 50:
+            viral_score = 15
+        else:
+            viral_score = min(views_per_sub / 5, 10)  # Linear up to 50
+        
+        # 2. Low subscriber bonus (opportunity) - max 30 points  
+        if subscribers < 5000:
+            size_score = 30  # Very small, high opportunity
+        elif subscribers < 20000:
+            size_score = 25  # Small, good opportunity
+        elif subscribers < 50000:
+            size_score = 20  # Medium, some opportunity
+        elif subscribers < 100000:
+            size_score = 15  # Getting established
+        else:
+            size_score = 10  # Already established
+        
+        # 3. Channel age (sweet spot for rising stars) - max 30 points
+        if channel_age_years < 0.25:
+            age_score = 10  # Too new, risky
+        elif channel_age_years < 0.75:
+            age_score = 25  # New and promising
+        elif channel_age_years < 2:
+            age_score = 30  # Sweet spot - established but still growing
+        elif channel_age_years < 3:
+            age_score = 25  # Still good potential
+        elif channel_age_years < 5:
+            age_score = 20  # Established
+        else:
+            age_score = 15  # Mature channel
+        
+        # Calculate total score
+        rising_star_score = viral_score + size_score + age_score
+        
+        # Generate explanation
+        why_rising_star = self._generate_explanation(
+            views_per_sub, subscribers, channel_age_years, rising_star_score
+        )
+        
+        # Format channel age for display
+        if channel_age_days < 30:
+            age_display = f"{channel_age_days} days"
+        elif channel_age_days < 365:
+            age_display = f"{channel_age_days // 30} months"
+        else:
+            age_display = f"{channel_age_years:.1f} years"
+        
+        return {
+            'name': name,
+            'channel_id': channel_id,
+            'url': f"https://youtube.com/channel/{channel_id}",
+            'subscribers': subscribers,
+            'total_views': total_views,
+            'video_count': video_count,
+            'created_date': published_at.split('T')[0],
+            'channel_age': age_display,
+            'views_per_subscriber': round(views_per_sub, 1),
+            'rising_star_score': round(rising_star_score, 1),
+            'why_rising_star': why_rising_star,
+            'score_breakdown': {
+                'viral_potential': round(viral_score, 1),
+                'opportunity_size': round(size_score, 1),
+                'age_factor': round(age_score, 1)
+            }
+        }
+    
+    def _generate_explanation(self, views_per_sub: float, subscribers: int, 
+                            age_years: float, total_score: float) -> str:
+        """Generate explanation for why this is a rising star"""
+        explanations = []
+        
+        if views_per_sub > 200:
+            explanations.append(f"High viral potential ({views_per_sub:.0f} views/sub)")
+        elif views_per_sub > 100:
+            explanations.append(f"Good viral potential ({views_per_sub:.0f} views/sub)")
+        
+        if subscribers < 1000:
+            explanations.append("very small channel (high opportunity)")
+        elif subscribers < 10000:
+            explanations.append("small channel (good opportunity)")
+        elif subscribers < 50000:
+            explanations.append("medium channel (opportunity exists)")
+        
+        if age_years < 1:
+            explanations.append("recently created")
+        elif age_years < 2:
+            explanations.append("relatively new")
+        
+        if total_score >= 80:
+            return "🔥 " + ", ".join(explanations)
+        elif total_score >= 70:
+            return "⭐ " + ", ".join(explanations)
+        else:
+            return ", ".join(explanations)
+    
+    def _empty_response(self, niche: str, reason: str) -> dict:
+        """Return empty response structure"""
+        return {
+            'niche': niche,
+            'channels': [],
+            'analysis': {
+                'total_channels_found': 0,
+                'rising_stars_identified': 0,
+                'best_opportunity': None,
+                'error_reason': reason
+            },
+            'success': False
+        }
 
 class NicheScorer:
     """Core niche scoring logic with optimized calculations"""
@@ -617,12 +910,13 @@ _youtube_api = None
 _trends_api = None
 _niche_scorer = None
 _recommendation_engine = None
+_channel_discovery = None
 _request_count = 0
 _start_time = time.time()
 
 def get_shared_components():
     """Get shared component instances"""
-    global _cache, _youtube_api, _trends_api, _niche_scorer, _recommendation_engine
+    global _cache, _youtube_api, _trends_api, _niche_scorer, _recommendation_engine, _channel_discovery
     
     if _cache is None:
         logger.info("Initializing shared components...")
@@ -631,9 +925,10 @@ def get_shared_components():
         _trends_api = TrendsAPI(_cache)
         _niche_scorer = NicheScorer(_youtube_api, _trends_api)
         _recommendation_engine = RecommendationEngine(_niche_scorer)
+        _channel_discovery = ChannelDiscovery(_youtube_api, _cache)
         logger.info("Shared components initialized")
     
-    return _cache, _youtube_api, _trends_api, _niche_scorer, _recommendation_engine
+    return _cache, _youtube_api, _trends_api, _niche_scorer, _recommendation_engine, _channel_discovery
 
 class RequestHandler(BaseHTTPRequestHandler):
     """HTTP request handler with shared components"""
@@ -660,6 +955,14 @@ class RequestHandler(BaseHTTPRequestHandler):
                     self.send_json(result)
             elif parsed.path == '/api/suggestions':
                 self.send_json(self.get_suggestions())
+            elif parsed.path == '/api/channels':
+                params = parse_qs(parsed.query)
+                niche = params.get('niche', [''])[0]
+                if not niche:
+                    self.send_json({'error': 'Please provide a niche parameter'})
+                else:
+                    result = self.discover_channels(niche)
+                    self.send_json(result)
             elif parsed.path == '/api/stats':
                 self.send_json(self.get_stats())
             elif parsed.path == '/api/status':
@@ -676,7 +979,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         logger.info(f"Analyzing niche: {niche_name}")
         
         try:
-            cache, youtube_api, trends_api, niche_scorer, recommendation_engine = get_shared_components()
+            cache, youtube_api, trends_api, niche_scorer, recommendation_engine, channel_discovery = get_shared_components()
             
             # Get full score for the main niche
             result = niche_scorer.full_score(niche_name)
@@ -686,7 +989,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                 niche_name, result['total_score']
             )
             
+            # Get rising star channels
+            rising_star_channels = channel_discovery.find_rising_star_channels(niche_name)
+            
             result['recommendations'] = recommendations
+            result['rising_star_channels'] = rising_star_channels
             result['recommendation'] = self._get_recommendation_text(result['total_score'])
             
             # Add performance stats
@@ -705,6 +1012,42 @@ class RequestHandler(BaseHTTPRequestHandler):
             logger.error(f"Analysis error for {niche_name}: {e}")
             raise
     
+    def discover_channels(self, niche: str) -> dict:
+        """Discover rising star channels for a niche"""
+        start_time = time.time()
+        logger.info(f"Discovering channels for: {niche}")
+        
+        try:
+            cache, youtube_api, trends_api, niche_scorer, recommendation_engine, channel_discovery = get_shared_components()
+            
+            # Get channel discovery results
+            result = channel_discovery.find_rising_star_channels(niche)
+            
+            # Add API stats
+            discovery_time = time.time() - start_time
+            result['performance'] = {
+                'discovery_time_seconds': round(discovery_time, 2),
+                'youtube_api_calls': youtube_api.call_count,
+                'cache_stats': cache.get_stats()
+            }
+            
+            logger.info(f"Channel discovery completed in {discovery_time:.2f}s")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Channel discovery error for {niche}: {e}")
+            return {
+                'niche': niche,
+                'channels': [],
+                'analysis': {
+                    'total_channels_found': 0,
+                    'rising_stars_identified': 0,
+                    'best_opportunity': None,
+                    'error_reason': f'Error: {str(e)}'
+                },
+                'success': False
+            }
+    
     def get_suggestions(self) -> dict:
         """Get random niche suggestions"""
         suggestions = []
@@ -722,7 +1065,7 @@ class RequestHandler(BaseHTTPRequestHandler):
     
     def get_stats(self) -> dict:
         """Get comprehensive API statistics"""
-        cache, youtube_api, trends_api, _, _ = get_shared_components()
+        cache, youtube_api, trends_api, _, _, _ = get_shared_components()
         uptime = time.time() - _start_time
         return {
             'uptime_seconds': round(uptime, 1),
@@ -1166,6 +1509,118 @@ class RequestHandler(BaseHTTPRequestHandler):
             font-size: 0.85em;
             color: #666;
         }}
+        
+        .rising-stars-section {{
+            margin-top: 20px;
+            padding: 20px;
+            background: linear-gradient(135deg, #fff8e1 0%, #f3e5f5 100%);
+            border-radius: 12px;
+            border: 2px solid #ff9800;
+        }}
+        
+        .rising-stars-header {{
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 16px;
+            font-size: 1.1em;
+            font-weight: 600;
+            color: #e65100;
+        }}
+        
+        .channel-grid {{
+            display: grid;
+            gap: 12px;
+        }}
+        
+        .channel-card {{
+            background: white;
+            border-radius: 8px;
+            padding: 16px;
+            border: 1px solid #ffcc02;
+            transition: all 0.3s;
+            cursor: pointer;
+        }}
+        
+        .channel-card:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(255, 152, 0, 0.3);
+            border-color: #ff9800;
+        }}
+        
+        .channel-header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }}
+        
+        .channel-name {{
+            font-weight: 600;
+            font-size: 1.1em;
+            color: #e65100;
+            text-decoration: none;
+        }}
+        
+        .channel-name:hover {{
+            color: #ff9800;
+        }}
+        
+        .rising-star-score {{
+            background: linear-gradient(135deg, #ff9800, #f57c00);
+            color: white;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.9em;
+        }}
+        
+        .channel-stats {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 8px;
+            margin-bottom: 12px;
+            font-size: 0.9em;
+        }}
+        
+        .channel-stat {{
+            text-align: center;
+            padding: 8px;
+            background: #f5f5f5;
+            border-radius: 6px;
+        }}
+        
+        .stat-value {{
+            font-weight: 600;
+            color: #333;
+            display: block;
+            font-size: 1.1em;
+        }}
+        
+        .stat-label {{
+            color: #666;
+            font-size: 0.8em;
+            margin-top: 2px;
+        }}
+        
+        .channel-explanation {{
+            background: #fff3e0;
+            padding: 10px;
+            border-radius: 6px;
+            border-left: 3px solid #ff9800;
+            font-size: 0.9em;
+            color: #e65100;
+            margin-top: 8px;
+        }}
+        
+        .no-channels {{
+            text-align: center;
+            color: #f57c00;
+            font-style: italic;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+        }}
     </style>
 </head>
 <body>
@@ -1303,6 +1758,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                         ${{renderBreakdown('Trends', data.breakdown.trend_momentum, 15, '#2196F3')}}
                     </div>
                     
+                    ${{renderRisingStarChannels(data.rising_star_channels)}}
+                    
                     ${{renderRecommendations(data.recommendations, data.total_score)}}
                     
                     ${{renderPerformanceStats(data.performance)}}
@@ -1330,6 +1787,74 @@ class RequestHandler(BaseHTTPRequestHandler):
                     <div class="breakdown-value">${{data.score}}/${{max}}</div>
                 </div>
             `;
+        }}
+        
+        function renderRisingStarChannels(channelData) {{
+            if (!channelData || !channelData.success || !channelData.channels || channelData.channels.length === 0) {{
+                return `
+                    <div class="rising-stars-section">
+                        <div class="rising-stars-header">
+                            🌟 Rising Star Channels
+                        </div>
+                        <div class="no-channels">
+                            ${{channelData?.analysis?.error_reason || 'No rising star channels found in this niche.'}}
+                        </div>
+                    </div>
+                `;
+            }}
+            
+            const analysis = channelData.analysis || {{}};
+            const channels = channelData.channels || [];
+            
+            return `
+                <div class="rising-stars-section">
+                    <div class="rising-stars-header">
+                        🌟 Rising Star Channels (${{channels.length}} found)
+                        <span style="font-size: 0.8em; color: #f57c00;">High opportunity channels punching above their weight</span>
+                    </div>
+                    <div class="channel-grid">
+                        ${{channels.map(channel => `
+                            <div class="channel-card">
+                                <div class="channel-header">
+                                    <a href="${{channel.url}}" target="_blank" class="channel-name">
+                                        ${{channel.name}}
+                                    </a>
+                                    <div class="rising-star-score">
+                                        Score: ${{channel.rising_star_score}}
+                                    </div>
+                                </div>
+                                <div class="channel-stats">
+                                    <div class="channel-stat">
+                                        <span class="stat-value">${{formatNumber(channel.subscribers)}}</span>
+                                        <div class="stat-label">Subscribers</div>
+                                    </div>
+                                    <div class="channel-stat">
+                                        <span class="stat-value">${{formatNumber(channel.total_views)}}</span>
+                                        <div class="stat-label">Total Views</div>
+                                    </div>
+                                    <div class="channel-stat">
+                                        <span class="stat-value">${{channel.views_per_subscriber}}</span>
+                                        <div class="stat-label">Views/Sub</div>
+                                    </div>
+                                    <div class="channel-stat">
+                                        <span class="stat-value">${{channel.channel_age}}</span>
+                                        <div class="stat-label">Age</div>
+                                    </div>
+                                </div>
+                                <div class="channel-explanation">
+                                    ${{channel.why_rising_star}}
+                                </div>
+                            </div>
+                        `).join('')}}
+                    </div>
+                </div>
+            `;
+        }}
+        
+        function formatNumber(num) {{
+            if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+            if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+            return num.toLocaleString();
         }}
         
         function renderRecommendations(recommendations, originalScore) {{
@@ -1461,11 +1986,11 @@ def main():
     logger.info("🎯 YouTube Niche Discovery Engine - REFACTORED & OPTIMIZED")
     logger.info(f"🔑 API Key: ...{YOUTUBE_API_KEY[-4:]}")
     logger.info("⚡ Features: Smart Caching, Two-Phase Scoring, Optimized Architecture")
-    logger.info(f"💻 Local: http://localhost:8080")
-    logger.info(f"🌍 External: http://38.143.19.241:8080")
+    logger.info(f"💻 Local: http://localhost:8081")
+    logger.info(f"🌍 External: http://38.143.19.241:8081")
     logger.info("\n🚀 Starting optimized server...\n")
     
-    httpd = HTTPServer(('0.0.0.0', 8080), RequestHandler)
+    httpd = HTTPServer(('0.0.0.0', 8081), RequestHandler)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
