@@ -1,0 +1,1593 @@
+openapi: 3.0.3
+info:
+  title: YouTube Niche Discovery Engine API
+  description: |
+    A comprehensive API for discovering, validating, and analyzing YouTube niches.
+    
+    ## Authentication
+    This API uses JWT Bearer tokens for authentication. Include the token in the Authorization header:
+    ```
+    Authorization: Bearer <your-jwt-token>
+    ```
+    
+    ## Rate Limiting
+    - Standard users: 100 requests per hour
+    - Premium users: 1000 requests per hour
+    - Rate limit headers are included in all responses
+    
+    ## Response Format
+    All responses follow a consistent format with `data`, `meta`, and optional `errors` fields.
+    
+    ## Pagination
+    List endpoints support cursor-based pagination for optimal performance.
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: support@nichediscovery.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://api.nichediscovery.com/v1
+    description: Production server
+  - url: https://staging-api.nichediscovery.com/v1
+    description: Staging server
+  - url: http://localhost:8000/v1
+    description: Development server
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Authentication
+    description: User authentication and authorization
+  - name: Niches
+    description: Niche discovery, validation, and management
+  - name: Analytics
+    description: Analytics and trending data
+  - name: Sources
+    description: Data source management
+  - name: Users
+    description: User management
+  - name: Admin
+    description: Administrative functions
+
+paths:
+  # =====================================================
+  # AUTHENTICATION ENDPOINTS
+  # =====================================================
+  
+  /auth/register:
+    post:
+      tags: [Authentication]
+      summary: Register a new user
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, username, full_name]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: "user@example.com"
+                password:
+                  type: string
+                  minLength: 8
+                  example: "securepassword123"
+                username:
+                  type: string
+                  minLength: 3
+                  maxLength: 50
+                  pattern: '^[a-zA-Z0-9_]+$'
+                  example: "johndoe"
+                full_name:
+                  type: string
+                  maxLength: 100
+                  example: "John Doe"
+      responses:
+        '201':
+          description: User created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /auth/login:
+    post:
+      tags: [Authentication]
+      summary: Authenticate user and get JWT token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Authentication successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/refresh:
+    post:
+      tags: [Authentication]
+      summary: Refresh JWT token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '200':
+          description: Token refreshed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout:
+    post:
+      tags: [Authentication]
+      summary: Logout user and invalidate token
+      responses:
+        '204':
+          description: Successfully logged out
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # =====================================================
+  # NICHES ENDPOINTS
+  # =====================================================
+
+  /niches:
+    get:
+      tags: [Niches]
+      summary: List niches with filtering and pagination
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Number of niches to return
+        - name: cursor
+          in: query
+          schema:
+            type: string
+          description: Cursor for pagination
+        - name: category
+          in: query
+          schema:
+            type: string
+          description: Filter by category slug
+        - name: min_score
+          in: query
+          schema:
+            type: number
+            minimum: 0
+            maximum: 100
+          description: Minimum overall score
+        - name: max_score
+          in: query
+          schema:
+            type: number
+            minimum: 0
+            maximum: 100
+          description: Maximum overall score
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [discovered, analyzing, validated, rejected, archived]
+          description: Filter by niche status
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            enum: [score, discovered_at, name, updated_at]
+            default: score
+          description: Sort field
+        - name: sort_order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+          description: Sort order
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Full-text search query
+        - name: keywords
+          in: query
+          schema:
+            type: string
+          description: Comma-separated keywords to filter by
+      responses:
+        '200':
+          description: List of niches
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/NicheSummary'
+                  meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags: [Niches]
+      summary: Manually add a new niche
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NicheCreate'
+      responses:
+        '201':
+          description: Niche created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/NicheDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /niches/discover:
+    post:
+      tags: [Niches]
+      summary: Trigger automated niche discovery
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sources:
+                  type: array
+                  items:
+                    type: string
+                  description: List of source platforms to scrape
+                  example: ["youtube", "tiktok", "reddit"]
+                categories:
+                  type: array
+                  items:
+                    type: string
+                  description: Categories to focus on
+                  example: ["technology", "health-fitness"]
+                keywords:
+                  type: array
+                  items:
+                    type: string
+                  description: Seed keywords for discovery
+                  example: ["AI", "fitness", "cooking"]
+                max_niches:
+                  type: integer
+                  minimum: 1
+                  maximum: 1000
+                  default: 100
+                  description: Maximum number of niches to discover
+                priority:
+                  type: string
+                  enum: [low, medium, high, urgent]
+                  default: medium
+                  description: Job priority
+      responses:
+        '202':
+          description: Discovery job queued successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      job_id:
+                        type: string
+                        format: uuid
+                        example: "123e4567-e89b-12d3-a456-426614174000"
+                      status:
+                        type: string
+                        enum: [queued, running]
+                      estimated_completion:
+                        type: string
+                        format: date-time
+                        example: "2026-02-02T15:30:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /niches/{id}:
+    get:
+      tags: [Niches]
+      summary: Get detailed niche information
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Niche ID
+      responses:
+        '200':
+          description: Niche details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/NicheDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    put:
+      tags: [Niches]
+      summary: Update niche information
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Niche ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NicheUpdate'
+      responses:
+        '200':
+          description: Niche updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/NicheDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Niches]
+      summary: Archive a niche
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Niche ID
+      responses:
+        '204':
+          description: Niche archived successfully
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /niches/{id}/analysis:
+    get:
+      tags: [Niches]
+      summary: Get detailed niche analysis and scoring breakdown
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Niche ID
+        - name: time_range
+          in: query
+          schema:
+            type: string
+            enum: [1d, 7d, 30d, 90d, 1y]
+            default: 30d
+          description: Time range for trend analysis
+      responses:
+        '200':
+          description: Detailed niche analysis
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/NicheAnalysis'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    post:
+      tags: [Niches]
+      summary: Trigger re-analysis of a niche
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Niche ID
+      responses:
+        '202':
+          description: Analysis job queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      job_id:
+                        type: string
+                        format: uuid
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # =====================================================
+  # ANALYTICS ENDPOINTS
+  # =====================================================
+
+  /analytics/trending:
+    get:
+      tags: [Analytics]
+      summary: Get real-time trending niches
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: time_frame
+          in: query
+          schema:
+            type: string
+            enum: [1h, 6h, 24h, 7d]
+            default: 24h
+          description: Time frame for trending calculation
+        - name: category
+          in: query
+          schema:
+            type: string
+          description: Filter by category
+      responses:
+        '200':
+          description: List of trending niches
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TrendingNiche'
+                  meta:
+                    type: object
+                    properties:
+                      generated_at:
+                        type: string
+                        format: date-time
+                      time_frame:
+                        type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /analytics/dashboard:
+    get:
+      tags: [Analytics]
+      summary: Get dashboard analytics data
+      parameters:
+        - name: time_range
+          in: query
+          schema:
+            type: string
+            enum: [24h, 7d, 30d, 90d]
+            default: 7d
+      responses:
+        '200':
+          description: Dashboard data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/DashboardData'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /analytics/reports/export:
+    post:
+      tags: [Analytics]
+      summary: Generate and export analytics report
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                format:
+                  type: string
+                  enum: [csv, xlsx, pdf]
+                  default: csv
+                filters:
+                  type: object
+                  properties:
+                    categories:
+                      type: array
+                      items:
+                        type: string
+                    min_score:
+                      type: number
+                    date_range:
+                      type: object
+                      properties:
+                        start:
+                          type: string
+                          format: date
+                        end:
+                          type: string
+                          format: date
+      responses:
+        '202':
+          description: Export job queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      export_id:
+                        type: string
+                        format: uuid
+                      download_url:
+                        type: string
+                        format: uri
+                      expires_at:
+                        type: string
+                        format: date-time
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # =====================================================
+  # SOURCES ENDPOINTS
+  # =====================================================
+
+  /sources:
+    get:
+      tags: [Sources]
+      summary: List data sources
+      parameters:
+        - name: platform
+          in: query
+          schema:
+            type: string
+            enum: [youtube, tiktok, reddit, google_trends, instagram, twitter]
+        - name: active_only
+          in: query
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: List of data sources
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Source'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /sources/{id}/status:
+    get:
+      tags: [Sources]
+      summary: Get source health status
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Source status information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SourceStatus'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # =====================================================
+  # JOBS ENDPOINTS
+  # =====================================================
+
+  /jobs:
+    get:
+      tags: [Analytics]
+      summary: List background jobs
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, running, completed, failed, cancelled]
+        - name: job_type
+          in: query
+          schema:
+            type: string
+            enum: [discovery, validation, update]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: List of background jobs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Job'
+                  meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /jobs/{id}:
+    get:
+      tags: [Analytics]
+      summary: Get job details and status
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Job details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/JobDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    delete:
+      tags: [Analytics]
+      summary: Cancel a pending or running job
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Job cancelled successfully
+        '400':
+          description: Job cannot be cancelled (already completed)
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # =====================================================
+  # USER MANAGEMENT ENDPOINTS
+  # =====================================================
+
+  /users/profile:
+    get:
+      tags: [Users]
+      summary: Get current user profile
+      responses:
+        '200':
+          description: User profile information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/UserProfile'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    put:
+      tags: [Users]
+      summary: Update user profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserProfileUpdate'
+      responses:
+        '200':
+          description: Profile updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/UserProfile'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/settings:
+    get:
+      tags: [Users]
+      summary: Get user settings
+      responses:
+        '200':
+          description: User settings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/UserSettings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    put:
+      tags: [Users]
+      summary: Update user settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserSettings'
+      responses:
+        '200':
+          description: Settings updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/UserSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # =====================================================
+  # HEALTH CHECK ENDPOINTS
+  # =====================================================
+
+  /health:
+    get:
+      tags: [Admin]
+      summary: API health check
+      security: []
+      responses:
+        '200':
+          description: API is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "healthy"
+                  timestamp:
+                    type: string
+                    format: date-time
+                  version:
+                    type: string
+                    example: "1.0.0"
+                  services:
+                    type: object
+                    properties:
+                      database:
+                        type: string
+                        enum: [healthy, degraded, unhealthy]
+                      redis:
+                        type: string
+                        enum: [healthy, degraded, unhealthy]
+                      celery:
+                        type: string
+                        enum: [healthy, degraded, unhealthy]
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    BadRequest:
+      description: Bad request - invalid parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            errors:
+              - code: "INVALID_PARAMETER"
+                message: "The 'min_score' parameter must be between 0 and 100"
+                field: "min_score"
+
+    Unauthorized:
+      description: Unauthorized - invalid or missing authentication
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            errors:
+              - code: "UNAUTHORIZED"
+                message: "Invalid or expired authentication token"
+
+    Forbidden:
+      description: Forbidden - insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            errors:
+              - code: "NOT_FOUND"
+                message: "Niche with ID '123e4567-e89b-12d3-a456-426614174000' not found"
+
+    Conflict:
+      description: Conflict - resource already exists
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    TooManyRequests:
+      description: Rate limit exceeded
+      headers:
+        X-RateLimit-Limit:
+          schema:
+            type: integer
+          description: Request limit per hour
+        X-RateLimit-Remaining:
+          schema:
+            type: integer
+          description: Remaining requests in current window
+        X-RateLimit-Reset:
+          schema:
+            type: integer
+          description: Time when rate limit resets (Unix timestamp)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    # =====================================================
+    # AUTHENTICATION SCHEMAS
+    # =====================================================
+
+    AuthResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            user:
+              $ref: '#/components/schemas/UserProfile'
+            access_token:
+              type: string
+              example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+            refresh_token:
+              type: string
+            token_type:
+              type: string
+              example: "Bearer"
+            expires_in:
+              type: integer
+              description: Token expiry in seconds
+              example: 3600
+
+    TokenResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            access_token:
+              type: string
+            token_type:
+              type: string
+              example: "Bearer"
+            expires_in:
+              type: integer
+              example: 3600
+
+    # =====================================================
+    # NICHE SCHEMAS
+    # =====================================================
+
+    NicheSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "123e4567-e89b-12d3-a456-426614174000"
+        name:
+          type: string
+          example: "AI-Powered Fitness Apps"
+        slug:
+          type: string
+          example: "ai-powered-fitness-apps"
+        overall_score:
+          type: number
+          minimum: 0
+          maximum: 100
+          example: 87.5
+        status:
+          type: string
+          enum: [discovered, analyzing, validated, rejected, archived]
+          example: "validated"
+        category:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+              example: "Health & Fitness"
+            slug:
+              type: string
+              example: "health-fitness"
+        discovered_at:
+          type: string
+          format: date-time
+          example: "2026-02-01T10:30:00Z"
+        last_analyzed:
+          type: string
+          format: date-time
+          example: "2026-02-01T14:15:00Z"
+        keywords:
+          type: array
+          items:
+            type: string
+          example: ["AI", "fitness", "apps", "machine learning", "health"]
+        tags:
+          type: array
+          items:
+            type: string
+          example: ["trending", "high-potential", "tech"]
+
+    NicheDetail:
+      allOf:
+        - $ref: '#/components/schemas/NicheSummary'
+        - type: object
+          properties:
+            description:
+              type: string
+              example: "Niche focusing on AI-powered fitness applications that provide personalized workout plans and nutrition advice."
+            competition_score:
+              type: number
+              minimum: 0
+              maximum: 100
+              example: 65.0
+            demand_score:
+              type: number
+              minimum: 0
+              maximum: 100
+              example: 92.0
+            monetization_score:
+              type: number
+              minimum: 0
+              maximum: 100
+              example: 88.0
+            trend_score:
+              type: number
+              minimum: 0
+              maximum: 100
+              example: 95.0
+            discovery_source:
+              type: string
+              example: "youtube"
+            validation_status:
+              type: string
+              enum: [pending, in_progress, completed, failed]
+              example: "completed"
+            metadata:
+              type: object
+              additionalProperties: true
+              example:
+                primary_platform: "youtube"
+                estimated_monthly_searches: 125000
+                top_competitors: ["Fitness Blender", "Nike Training Club"]
+
+    NicheCreate:
+      type: object
+      required: [name, category_id]
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        category_id:
+          type: string
+          format: uuid
+        keywords:
+          type: array
+          items:
+            type: string
+        tags:
+          type: array
+          items:
+            type: string
+
+    NicheUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        category_id:
+          type: string
+          format: uuid
+        keywords:
+          type: array
+          items:
+            type: string
+        tags:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [discovered, analyzing, validated, rejected, archived]
+
+    NicheAnalysis:
+      type: object
+      properties:
+        niche:
+          $ref: '#/components/schemas/NicheDetail'
+        scoring_breakdown:
+          type: object
+          properties:
+            competition:
+              type: object
+              properties:
+                score:
+                  type: number
+                  example: 65.0
+                factors:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                        example: "Number of competitors"
+                      value:
+                        type: number
+                        example: 1250
+                      weight:
+                        type: number
+                        example: 0.3
+                      impact:
+                        type: string
+                        enum: [positive, negative, neutral]
+                        example: "negative"
+            demand:
+              type: object
+              properties:
+                score:
+                  type: number
+                  example: 92.0
+                factors:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                        example: "Monthly search volume"
+                      value:
+                        type: number
+                        example: 125000
+                      weight:
+                        type: number
+                        example: 0.4
+                      impact:
+                        type: string
+                        example: "positive"
+        trend_analysis:
+          type: object
+          properties:
+            direction:
+              type: string
+              enum: [up, down, stable]
+              example: "up"
+            velocity:
+              type: number
+              description: Rate of change percentage
+              example: 15.5
+            momentum:
+              type: string
+              enum: [accelerating, decelerating, stable]
+              example: "accelerating"
+            historical_data:
+              type: array
+              items:
+                type: object
+                properties:
+                  date:
+                    type: string
+                    format: date
+                  score:
+                    type: number
+                  search_volume:
+                    type: integer
+                  social_mentions:
+                    type: integer
+        recommendations:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+                enum: [content_strategy, monetization, competition, timing]
+              priority:
+                type: string
+                enum: [low, medium, high, critical]
+              message:
+                type: string
+              action_items:
+                type: array
+                items:
+                  type: string
+
+    TrendingNiche:
+      type: object
+      properties:
+        niche:
+          $ref: '#/components/schemas/NicheSummary'
+        trend_data:
+          type: object
+          properties:
+            score_change:
+              type: number
+              description: Point change in overall score
+              example: 12.5
+            score_change_percentage:
+              type: number
+              description: Percentage change in score
+              example: 16.8
+            velocity:
+              type: string
+              enum: [slow, moderate, fast, explosive]
+              example: "fast"
+            time_frame:
+              type: string
+              example: "24h"
+
+    # =====================================================
+    # ANALYTICS SCHEMAS
+    # =====================================================
+
+    DashboardData:
+      type: object
+      properties:
+        summary:
+          type: object
+          properties:
+            total_niches:
+              type: integer
+              example: 1247
+            validated_niches:
+              type: integer
+              example: 892
+            high_score_niches:
+              type: integer
+              description: Niches with score >= 90
+              example: 34
+            trending_niches:
+              type: integer
+              example: 12
+        recent_discoveries:
+          type: array
+          items:
+            $ref: '#/components/schemas/NicheSummary'
+          maxItems: 5
+        score_distribution:
+          type: object
+          properties:
+            ranges:
+              type: array
+              items:
+                type: object
+                properties:
+                  min:
+                    type: number
+                  max:
+                    type: number
+                  count:
+                    type: integer
+        category_breakdown:
+          type: array
+          items:
+            type: object
+            properties:
+              category:
+                type: string
+              count:
+                type: integer
+              avg_score:
+                type: number
+        discovery_timeline:
+          type: array
+          items:
+            type: object
+            properties:
+              date:
+                type: string
+                format: date
+              discovered:
+                type: integer
+              validated:
+                type: integer
+
+    # =====================================================
+    # SOURCE SCHEMAS
+    # =====================================================
+
+    Source:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        platform:
+          type: string
+          enum: [youtube, tiktok, reddit, google_trends, instagram, twitter]
+        name:
+          type: string
+        is_active:
+          type: boolean
+        rate_limit_per_hour:
+          type: integer
+        last_scraped:
+          type: string
+          format: date-time
+        success_rate:
+          type: number
+          minimum: 0
+          maximum: 100
+
+    SourceStatus:
+      type: object
+      properties:
+        source:
+          $ref: '#/components/schemas/Source'
+        health:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        last_check:
+          type: string
+          format: date-time
+        response_time_ms:
+          type: integer
+        error_count_24h:
+          type: integer
+        success_count_24h:
+          type: integer
+        next_scheduled_scrape:
+          type: string
+          format: date-time
+
+    # =====================================================
+    # JOB SCHEMAS
+    # =====================================================
+
+    Job:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        job_type:
+          type: string
+          enum: [discovery, validation, update]
+        status:
+          type: string
+          enum: [pending, running, completed, failed, cancelled]
+        priority:
+          type: integer
+          minimum: 1
+          maximum: 10
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        duration_seconds:
+          type: integer
+        progress:
+          type: object
+          properties:
+            current:
+              type: integer
+            total:
+              type: integer
+            percentage:
+              type: number
+
+    JobDetail:
+      allOf:
+        - $ref: '#/components/schemas/Job'
+        - type: object
+          properties:
+            config:
+              type: object
+              additionalProperties: true
+            items_processed:
+              type: integer
+            items_successful:
+              type: integer
+            items_failed:
+              type: integer
+            error_message:
+              type: string
+            result_data:
+              type: object
+              additionalProperties: true
+
+    # =====================================================
+    # USER SCHEMAS
+    # =====================================================
+
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        username:
+          type: string
+        full_name:
+          type: string
+        role:
+          type: string
+          enum: [admin, user, premium]
+        is_verified:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        last_login:
+          type: string
+          format: date-time
+
+    UserProfileUpdate:
+      type: object
+      properties:
+        full_name:
+          type: string
+        username:
+          type: string
+        email:
+          type: string
+          format: email
+
+    UserSettings:
+      type: object
+      properties:
+        notifications:
+          type: object
+          properties:
+            email_enabled:
+              type: boolean
+            high_score_alerts:
+              type: boolean
+            weekly_summary:
+              type: boolean
+            discovery_complete:
+              type: boolean
+        preferences:
+          type: object
+          properties:
+            default_category:
+              type: string
+            score_threshold:
+              type: number
+              minimum: 0
+              maximum: 100
+            auto_discover:
+              type: boolean
+        api:
+          type: object
+          properties:
+            rate_limit:
+              type: integer
+            webhook_url:
+              type: string
+              format: uri
+
+    # =====================================================
+    # COMMON SCHEMAS
+    # =====================================================
+
+    PaginationMeta:
+      type: object
+      properties:
+        total:
+          type: integer
+          description: Total number of items
+        limit:
+          type: integer
+          description: Number of items per page
+        has_next:
+          type: boolean
+          description: Whether there are more items
+        next_cursor:
+          type: string
+          description: Cursor for the next page
+        prev_cursor:
+          type: string
+          description: Cursor for the previous page
+
+    ErrorResponse:
+      type: object
+      properties:
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+                description: Error code
+                example: "VALIDATION_ERROR"
+              message:
+                type: string
+                description: Human-readable error message
+                example: "The provided email address is invalid"
+              field:
+                type: string
+                description: Field that caused the error (if applicable)
+                example: "email"
+              details:
+                type: object
+                description: Additional error details
+                additionalProperties: true
+        meta:
+          type: object
+          properties:
+            request_id:
+              type: string
+              format: uuid
+              description: Unique request identifier for debugging
+            timestamp:
+              type: string
+              format: date-time
+              description: When the error occurred

@@ -1,0 +1,85 @@
+# Multi-stage Docker build for Backend Production
+FROM python:3.11-slim as base
+
+# Set environment variables for production
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    ENVIRONMENT=production
+
+# Install system dependencies (minimal for production)
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    curl \
+    postgresql-client \
+    build-essential \
+    libpq-dev \
+    libffi-dev \
+    libssl-dev \
+    chromium \
+    chromium-driver \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up Chrome for Selenium
+ENV CHROME_BIN=/usr/bin/chromium \
+    CHROME_PATH=/usr/bin/chromium
+
+# Builder stage
+FROM base as builder
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements
+COPY requirements.txt ./
+
+# Install Python dependencies
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+# Production stage
+FROM base as production
+
+# Create app directory
+WORKDIR /app
+
+# Create non-root user for security
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+# Copy Python dependencies from builder stage
+COPY --from=builder /root/.local /home/appuser/.local
+
+# Update PATH
+ENV PATH=/home/appuser/.local/bin:$PATH
+
+# Copy application code
+COPY . .
+
+# Create necessary directories with proper permissions
+RUN mkdir -p /app/logs /app/data /app/uploads && \
+    chown -R appuser:appuser /app
+
+# Install gunicorn for production server
+RUN pip install --no-cache-dir gunicorn uvicorn[standard]
+
+# Remove unnecessary files to reduce image size
+RUN rm -rf /app/tests /app/docs /app/scripts/dev* /app/*.md
+
+# Health check
+COPY --chown=appuser:appuser scripts/healthcheck.sh /usr/local/bin/healthcheck.sh
+RUN chmod +x /usr/local/bin/healthcheck.sh
+
+# Switch to non-root user
+USER appuser
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD /usr/local/bin/healthcheck.sh
+
+# Production command
+CMD ["gunicorn", "app.main:app", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "120", "--keepalive", "5", "--max-requests", "1000", "--max-requests-jitter", "100", "--preload", "--access-logfile", "-", "--error-logfile", "-"]

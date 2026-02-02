@@ -1,0 +1,252 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: niche_postgres
+    environment:
+      POSTGRES_USER: niche_user
+      POSTGRES_PASSWORD: niche_pass
+      POSTGRES_DB: niche_discovery_db
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/scripts/init_db.sql:/docker-entrypoint-initdb.d/01_init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U niche_user -d niche_discovery_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - niche_network
+
+  # Redis Cache & Message Broker
+  redis:
+    image: redis:7-alpine
+    container_name: niche_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./infrastructure/redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - niche_network
+
+  # Backend API (Development)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+      target: development
+    container_name: niche_backend
+    environment:
+      - DATABASE_URL=postgresql://niche_user:niche_pass@postgres:5432/niche_discovery_db
+      - REDIS_URL=redis://redis:6379/0
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+      - CORS_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000"]
+    ports:
+      - "8000:8000"
+      - "5678:5678"  # Debugger port
+    volumes:
+      - ./backend:/app
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "
+        echo 'Waiting for database to be ready...' &&
+        sleep 5 &&
+        alembic upgrade head &&
+        python scripts/seed_dev_data.py &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - niche_network
+
+  # Celery Worker (Background Tasks)
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+      target: development
+    container_name: niche_worker
+    environment:
+      - DATABASE_URL=postgresql://niche_user:niche_pass@postgres:5432/niche_discovery_db
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    volumes:
+      - ./backend:/app
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "
+        sleep 10 &&
+        celery -A app.core.celery_app worker --loglevel=info --concurrency=4
+      "
+    restart: unless-stopped
+    networks:
+      - niche_network
+
+  # Celery Beat (Scheduled Tasks)
+  scheduler:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+      target: development
+    container_name: niche_scheduler
+    environment:
+      - DATABASE_URL=postgresql://niche_user:niche_pass@postgres:5432/niche_discovery_db
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    volumes:
+      - ./backend:/app
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "
+        sleep 15 &&
+        celery -A app.core.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+      "
+    restart: unless-stopped
+    networks:
+      - niche_network
+
+  # Frontend (Development)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: niche_frontend
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+      - REACT_APP_ENVIRONMENT=development
+      - CHOKIDAR_USEPOLLING=true
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    command: npm run dev
+    restart: unless-stopped
+    networks:
+      - niche_network
+
+  # Redis Commander (Database Management)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: niche_redis_commander
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - niche_network
+
+  # PgAdmin (Database Management)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: niche_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@nichediscovery.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "8080:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    networks:
+      - niche_network
+
+  # Flower (Celery Monitoring)
+  flower:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+      target: development
+    container_name: niche_flower
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    ports:
+      - "5555:5555"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - redis
+    command: >
+      sh -c "
+        sleep 10 &&
+        celery -A app.core.celery_app flower --port=5555
+      "
+    restart: unless-stopped
+    networks:
+      - niche_network
+
+  # Mailhog (Email Testing)
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: niche_mailhog
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # Web UI
+    restart: unless-stopped
+    networks:
+      - niche_network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  niche_network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16

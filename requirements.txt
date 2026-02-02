@@ -1,0 +1,5 @@
+# No dependencies required for simulation mode
+# The production_server.py uses only Python standard library
+
+# For live API integration, use:
+# pip install -r requirements-live-api.txt

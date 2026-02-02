@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:14-alpine
+    container_name: niche_postgres_backend
+    environment:
+      POSTGRES_USER: niche_user
+      POSTGRES_PASSWORD: niche_secure_2024
+      POSTGRES_DB: niche_discovery_prod
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - niche_network
+    restart: unless-stopped
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: niche_redis_backend
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - niche_network
+    restart: unless-stopped
+
+  # FastAPI Backend - EXTERNAL ACCESS
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: niche_backend_only
+    environment:
+      - POSTGRES_SERVER=postgres
+      - POSTGRES_USER=niche_user
+      - POSTGRES_PASSWORD=niche_secure_2024
+      - POSTGRES_DB=niche_discovery_prod
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - ENVIRONMENT=production
+      - API_V1_STR=/api/v1
+      - SECRET_KEY=pm_agent_niche_discovery_super_secure_key_2024
+      - BACKEND_CORS_ORIGINS=*
+      - ALLOWED_HOSTS=*
+      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY:-demo_key_for_testing}
+      - MIN_SCORE_THRESHOLD=50.0
+      - HIGH_SCORE_THRESHOLD=90.0
+      - RATE_LIMIT_PER_MINUTE=1000
+    ports:
+      - "0.0.0.0:8000:8000"
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./backend:/app
+      - backend_logs:/app/logs
+    command: >
+      sh -c "
+        echo 'Waiting for database...' &&
+        python -c 'import time; time.sleep(10)' &&
+        pip install -r requirements.txt &&
+        python -c 'import asyncio; from app.core.database import create_all_tables; asyncio.run(create_all_tables())' &&
+        echo 'Starting Backend API on http://38.143.19.241:8000' &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+    networks:
+      - niche_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  backend_logs:
+
+networks:
+  niche_network:
+    driver: bridge

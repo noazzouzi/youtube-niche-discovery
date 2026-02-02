@@ -1,0 +1,227 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:14-alpine
+    container_name: niche_postgres
+    environment:
+      POSTGRES_USER: niche_user
+      POSTGRES_PASSWORD: niche_secure_2024
+      POSTGRES_DB: niche_discovery_prod
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./architecture/DATABASE_SCHEMA.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U niche_user -d niche_discovery_prod"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - niche_network
+
+  # Redis Cache & Job Queue
+  redis:
+    image: redis:7-alpine
+    container_name: niche_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - niche_network
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    container_name: niche_backend
+    environment:
+      - POSTGRES_SERVER=postgres
+      - POSTGRES_USER=niche_user
+      - POSTGRES_PASSWORD=niche_secure_2024
+      - POSTGRES_DB=niche_discovery_prod
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - ENVIRONMENT=production
+      - API_V1_STR=/api/v1
+      - SECRET_KEY=pm_agent_niche_discovery_super_secure_key_2024
+      - BACKEND_CORS_ORIGINS=http://localhost:3000,http://localhost:8080,http://frontend:3000
+      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY:-}
+      - MIN_SCORE_THRESHOLD=50.0
+      - HIGH_SCORE_THRESHOLD=90.0
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/logs:/app/logs
+    command: >
+      sh -c "
+        echo 'Waiting for database...' &&
+        python -c 'import time; time.sleep(10)' &&
+        echo 'Running migrations...' &&
+        alembic upgrade head &&
+        echo 'Starting FastAPI server...' &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - niche_network
+
+  # React Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+    container_name: niche_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+      - REACT_APP_ENVIRONMENT=production
+    depends_on:
+      - backend
+    networks:
+      - niche_network
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: niche_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./frontend/build:/usr/share/nginx/html:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - niche_network
+
+  # Background Worker for Niche Discovery
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    container_name: niche_worker
+    environment:
+      - POSTGRES_SERVER=postgres
+      - POSTGRES_USER=niche_user
+      - POSTGRES_PASSWORD=niche_secure_2024
+      - POSTGRES_DB=niche_discovery_prod
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - ENVIRONMENT=production
+      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "
+        echo 'Starting background worker...' &&
+        python -m celery -A app.workers.celery worker --loglevel=info --concurrency=2
+      "
+    volumes:
+      - ./backend/logs:/app/logs
+    networks:
+      - niche_network
+
+  # Celery Beat Scheduler (for automated daily discovery)
+  scheduler:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    container_name: niche_scheduler
+    environment:
+      - POSTGRES_SERVER=postgres
+      - POSTGRES_USER=niche_user
+      - POSTGRES_PASSWORD=niche_secure_2024
+      - POSTGRES_DB=niche_discovery_prod
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - ENVIRONMENT=production
+      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "
+        echo 'Starting scheduler...' &&
+        python -m celery -A app.workers.celery beat --loglevel=info
+      "
+    volumes:
+      - ./backend/logs:/app/logs
+    networks:
+      - niche_network
+
+  # Monitoring with Prometheus (optional)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: niche_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - niche_network
+
+  # Grafana Dashboard (optional)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: niche_grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - niche_network
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  niche_network:
+    driver: bridge

@@ -1,0 +1,116 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:14-alpine
+    container_name: niche_postgres_simple
+    environment:
+      POSTGRES_USER: niche_user
+      POSTGRES_PASSWORD: niche_secure_2024
+      POSTGRES_DB: niche_discovery_prod
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "127.0.0.1:5432:5432"  # Internal only
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - niche_network
+    restart: unless-stopped
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: niche_redis_simple
+    ports:
+      - "127.0.0.1:6379:6379"  # Internal only
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    networks:
+      - niche_network
+    restart: unless-stopped
+
+  # FastAPI Backend - EXTERNAL ACCESS
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: niche_backend_simple
+    environment:
+      - POSTGRES_SERVER=postgres
+      - POSTGRES_USER=niche_user
+      - POSTGRES_PASSWORD=niche_secure_2024
+      - POSTGRES_DB=niche_discovery_prod
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - ENVIRONMENT=production
+      - API_V1_STR=/api/v1
+      - SECRET_KEY=pm_agent_niche_discovery_super_secure_key_2024
+      - BACKEND_CORS_ORIGINS=http://38.143.19.241:3000,http://localhost:3000,http://38.143.19.241:8000
+      - ALLOWED_HOSTS=38.143.19.241,localhost,127.0.0.1
+      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY:-demo_key_for_testing}
+      - MIN_SCORE_THRESHOLD=50.0
+      - HIGH_SCORE_THRESHOLD=90.0
+      - RATE_LIMIT_PER_MINUTE=1000
+    ports:
+      - "0.0.0.0:8000:8000"  # EXTERNAL ACCESS
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./backend:/app
+      - backend_logs:/app/logs
+    command: >
+      sh -c "
+        echo 'Waiting for database...' &&
+        python -c 'import time; time.sleep(5)' &&
+        echo 'Installing dependencies...' &&
+        pip install -r requirements.txt &&
+        echo 'Creating database tables...' &&
+        python -c 'import asyncio; from app.core.database import create_all_tables; asyncio.run(create_all_tables())' &&
+        echo 'Starting FastAPI server for EXTERNAL ACCESS...' &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --log-level info
+      "
+    networks:
+      - niche_network
+    restart: unless-stopped
+
+  # React Frontend - EXTERNAL ACCESS  
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: niche_frontend_simple
+    environment:
+      - REACT_APP_API_URL=http://38.143.19.241:8000
+      - REACT_APP_ENVIRONMENT=production
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_USEPOLLING=true
+    ports:
+      - "0.0.0.0:3000:3000"  # EXTERNAL ACCESS
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: >
+      sh -c "
+        echo 'Installing frontend dependencies...' &&
+        npm install &&
+        echo 'Starting React development server for EXTERNAL ACCESS...' &&
+        npm start
+      "
+    depends_on:
+      - backend
+    networks:
+      - niche_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  backend_logs:
+
+networks:
+  niche_network:
+    driver: bridge
