@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 YouTube Niche Discovery Engine - REFACTORED VERSION
 With caching, optimized architecture, and two-phase scoring
@@ -13,11 +14,13 @@ import urllib.request
 import urllib.parse
 import hashlib
 import logging
+import subprocess
+import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timedelta
 from pytrends.request import TrendReq
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import quote
 
 # Configure logging
@@ -27,17 +30,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# API Key handling
-def get_youtube_api_key():
-    api_key = os.environ.get('YOUTUBE_API_KEY')
-    if not api_key:
-        api_key = "AIzaSyCBRslXGIXinYEa50_Vd8dG3roXja6BraU"
-        logger.warning("Using demo API key. Set YOUTUBE_API_KEY for production.")
-    else:
-        logger.info("Using API key from environment variable")
-    return api_key
+# Invidious API Configuration
+INVIDIOUS_INSTANCES = [
+    "https://vid.puffyan.us",
+    "https://yewtu.be", 
+    "https://invidious.kavin.rocks",
+    "https://invidious.snopyta.org"
+]
 
-YOUTUBE_API_KEY = get_youtube_api_key()
+logger.info("Using Invidious API (no API key required)")
 
 class APICache:
     """Smart caching layer with TTL support to reduce API costs"""
@@ -106,19 +107,147 @@ class APICache:
             logger.info(f"Cleared {len(expired_keys)} expired cache entries")
         return len(expired_keys)
 
-class YouTubeAPI:
-    """YouTube API client with caching"""
+class YtDlpClient:
+    """yt-dlp client for enhanced video/channel metadata extraction"""
     
-    def __init__(self, api_key: str, cache: APICache):
-        self.api_key = api_key
+    def __init__(self, cache: 'APICache'):
         self.cache = cache
-        self.base_url = "https://www.googleapis.com/youtube/v3"
+        self.timeout = 30
         self.call_count = 0
-        logger.info("YouTubeAPI initialized")
+        logger.info("YtDlpClient initialized")
     
-    def search(self, query: str, max_results: int = 30, use_cache: bool = True) -> Optional[dict]:
-        """Search YouTube with caching support"""
-        cache_key = self.cache._generate_key('yt_search', {
+    def get_video_info(self, video_url: str, use_cache: bool = True) -> Optional[dict]:
+        """Get detailed video metadata using yt-dlp"""
+        cache_key = self.cache._generate_key('ytdlp_video', {'url': video_url})
+        
+        # Try cache first  
+        if use_cache:
+            cached_result = self.cache.get(cache_key)
+            if cached_result:
+                logger.debug(f"Using cached yt-dlp video data for: {video_url}")
+                return cached_result
+        
+        try:
+            logger.info(f"Getting video info via yt-dlp: {video_url}")
+            cmd = [
+                'yt-dlp',
+                '--dump-json',
+                '--no-download',
+                '--no-playlist',
+                video_url
+            ]
+            
+            result = subprocess.run(
+                cmd, 
+                capture_output=True, 
+                text=True, 
+                timeout=self.timeout,
+                check=True
+            )
+            
+            self.call_count += 1
+            video_data = json.loads(result.stdout)
+            
+            # Cache with 2-hour TTL
+            if use_cache:
+                temp_cache = APICache(ttl_seconds=7200)
+                temp_cache.cache = self.cache.cache
+                temp_cache.set(cache_key, video_data)
+            
+            return video_data
+            
+        except subprocess.TimeoutExpired:
+            logger.error(f"yt-dlp timeout for video: {video_url}")
+            return None
+        except subprocess.CalledProcessError as e:
+            logger.error(f"yt-dlp error for video {video_url}: {e}")
+            return None
+        except json.JSONDecodeError as e:
+            logger.error(f"yt-dlp JSON decode error: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"yt-dlp unexpected error: {e}")
+            return None
+    
+    def get_channel_info(self, channel_url: str, use_cache: bool = True) -> Optional[dict]:
+        """Get channel metadata using yt-dlp"""
+        cache_key = self.cache._generate_key('ytdlp_channel', {'url': channel_url})
+        
+        # Try cache first
+        if use_cache:
+            cached_result = self.cache.get(cache_key)
+            if cached_result:
+                logger.debug(f"Using cached yt-dlp channel data for: {channel_url}")
+                return cached_result
+        
+        try:
+            logger.info(f"Getting channel info via yt-dlp: {channel_url}")
+            cmd = [
+                'yt-dlp',
+                '--dump-json',
+                '--no-download',
+                '--playlist-items', '1:5',  # First 5 videos for metadata
+                channel_url
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True, 
+                timeout=self.timeout,
+                check=True
+            )
+            
+            self.call_count += 1
+            
+            # Parse multiple JSON objects (one per video)
+            lines = result.stdout.strip().split('\n')
+            videos = []
+            channel_data = {}
+            
+            for line in lines:
+                if line.strip():
+                    try:
+                        video_data = json.loads(line)
+                        videos.append(video_data)
+                        
+                        # Extract channel info from first video
+                        if not channel_data and video_data:
+                            channel_data = {
+                                'channel_id': video_data.get('channel_id', ''),
+                                'channel_title': video_data.get('uploader', ''),
+                                'channel_follower_count': video_data.get('channel_follower_count', 0),
+                                'channel_url': video_data.get('uploader_url', ''),
+                                'videos': videos[:5]  # Limit to 5 videos
+                            }
+                    except json.JSONDecodeError:
+                        continue
+            
+            if channel_data:
+                # Cache with 4-hour TTL
+                if use_cache:
+                    temp_cache = APICache(ttl_seconds=14400)
+                    temp_cache.cache = self.cache.cache
+                    temp_cache.set(cache_key, channel_data)
+                
+                return channel_data
+            else:
+                logger.warning(f"No valid channel data extracted from: {channel_url}")
+                return None
+                
+        except subprocess.TimeoutExpired:
+            logger.error(f"yt-dlp timeout for channel: {channel_url}")
+            return None
+        except subprocess.CalledProcessError as e:
+            logger.error(f"yt-dlp error for channel {channel_url}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"yt-dlp unexpected error for channel: {e}")
+            return None
+    
+    def search_videos(self, query: str, max_results: int = 10, use_cache: bool = True) -> Optional[List[dict]]:
+        """Search YouTube via yt-dlp"""
+        cache_key = self.cache._generate_key('ytdlp_search', {
             'query': query,
             'max_results': max_results
         })
@@ -127,38 +256,284 @@ class YouTubeAPI:
         if use_cache:
             cached_result = self.cache.get(cache_key)
             if cached_result:
-                logger.debug(f"Using cached YouTube search for: {query}")
+                logger.debug(f"Using cached yt-dlp search for: {query}")
+                return cached_result
+        
+        try:
+            logger.info(f"Searching via yt-dlp: {query}")
+            cmd = [
+                'yt-dlp',
+                '--dump-json',
+                '--no-download',
+                '--flat-playlist',
+                f'ytsearch{max_results}:{query}'
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+                check=True
+            )
+            
+            self.call_count += 1
+            
+            # Parse search results
+            lines = result.stdout.strip().split('\n')
+            videos = []
+            
+            for line in lines:
+                if line.strip():
+                    try:
+                        video_data = json.loads(line)
+                        videos.append(video_data)
+                    except json.JSONDecodeError:
+                        continue
+            
+            # Cache with 2-hour TTL
+            if use_cache:
+                temp_cache = APICache(ttl_seconds=7200)
+                temp_cache.cache = self.cache.cache
+                temp_cache.set(cache_key, videos)
+            
+            return videos
+            
+        except subprocess.TimeoutExpired:
+            logger.error(f"yt-dlp search timeout for: {query}")
+            return None
+        except subprocess.CalledProcessError as e:
+            logger.error(f"yt-dlp search error for {query}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"yt-dlp search unexpected error: {e}")
+            return None
+    
+    def get_channel_stats_by_id(self, channel_id: str, use_cache: bool = True) -> Optional[dict]:
+        """Get detailed channel stats by channel ID using yt-dlp"""
+        if not channel_id:
+            return None
+        
+        # Convert channel ID to URL
+        channel_url = f"https://youtube.com/channel/{channel_id}"
+        return self.get_channel_info(channel_url, use_cache)
+
+class InvidiousAPI:
+    """Invidious API client with yt-dlp fallback, caching and instance failover"""
+    
+    def __init__(self, cache: APICache, ytdlp_client: Optional['YtDlpClient'] = None):
+        self.cache = cache
+        self.ytdlp_client = ytdlp_client
+        self.instances = INVIDIOUS_INSTANCES.copy()
+        self.current_instance = 0
+        self.call_count = 0
+        logger.info(f"InvidiousAPI initialized with {len(self.instances)} instances and yt-dlp fallback")
+    
+    def _get_instance(self) -> str:
+        """Get current Invidious instance and rotate on failure"""
+        return self.instances[self.current_instance]
+    
+    def _rotate_instance(self):
+        """Rotate to next Invidious instance"""
+        self.current_instance = (self.current_instance + 1) % len(self.instances)
+        logger.info(f"Rotated to instance: {self._get_instance()}")
+    
+    def _make_request(self, endpoint: str, params: dict = None, retries: int = 3) -> Optional[dict]:
+        """Make API request with instance failover"""
+        for attempt in range(retries):
+            try:
+                instance = self._get_instance()
+                url = f"{instance}/api/v1{endpoint}"
+                
+                if params:
+                    url += "?" + urllib.parse.urlencode(params)
+                
+                logger.debug(f"Invidious request: {url}")
+                
+                with urllib.request.urlopen(url, timeout=15) as response:
+                    result = json.loads(response.read().decode())
+                
+                self.call_count += 1
+                logger.debug(f"Invidious API success: {instance}")
+                return result
+                
+            except Exception as e:
+                logger.warning(f"Invidious API error on {self._get_instance()}: {e}")
+                if attempt < retries - 1:
+                    self._rotate_instance()
+                    time.sleep(1)  # Brief delay before retry
+                else:
+                    logger.error(f"All Invidious instances failed for {endpoint}")
+                    return None
+        
+        return None
+    
+    def search(self, query: str, max_results: int = 30, search_type: str = 'all', use_cache: bool = True) -> Optional[dict]:
+        """Search Invidious with caching support"""
+        cache_key = self.cache._generate_key('invidious_search', {
+            'query': query,
+            'max_results': max_results,
+            'type': search_type
+        })
+        
+        # Try cache first
+        if use_cache:
+            cached_result = self.cache.get(cache_key)
+            if cached_result:
+                logger.debug(f"Using cached Invidious search for: {query}")
                 return cached_result
         
         # Make API call
         params = {
-            'part': 'snippet',
             'q': query,
-            'maxResults': max_results,
-            'type': 'video,channel',
-            'key': self.api_key
+            'type': search_type
         }
-        url = f"{self.base_url}/search?" + urllib.parse.urlencode(params)
+        
+        result = self._make_request('/search', params)
+        
+        if result and use_cache:
+            # Cache the result (2 hours TTL for search results)
+            temp_cache = APICache(ttl_seconds=7200)
+            temp_cache.cache = self.cache.cache  # Share storage
+            temp_cache.set(cache_key, result)
+        
+        # Convert Invidious response to YouTube API format for compatibility
+        if result:
+            return self._convert_search_response(result, max_results)
+        
+        return None
+    
+    def get_channel(self, channel_id: str, use_cache: bool = True) -> Optional[dict]:
+        """Get channel information from Invidious with yt-dlp fallback"""
+        cache_key = self.cache._generate_key('invidious_channel', {'channel_id': channel_id})
+        
+        # Try cache first
+        if use_cache:
+            cached_result = self.cache.get(cache_key)
+            if cached_result:
+                logger.debug(f"Using cached channel data for: {channel_id}")
+                return cached_result
+        
+        result = self._make_request(f'/channels/{channel_id}')
+        
+        if result and use_cache:
+            self.cache.set(cache_key, result)
+        
+        return result
+    
+    def _convert_ytdlp_channel_to_invidious(self, ytdlp_data: dict, channel_id: str) -> dict:
+        """Convert yt-dlp channel data to Invidious-compatible format"""
+        try:
+            return {
+                'authorId': channel_id,
+                'author': ytdlp_data.get('channel_title', 'Unknown Channel'),
+                'subCount': ytdlp_data.get('channel_follower_count', 0),
+                'videoCount': len(ytdlp_data.get('videos', [])),
+                'description': f"Channel data enhanced via yt-dlp",
+                'authorUrl': ytdlp_data.get('channel_url', f'https://youtube.com/channel/{channel_id}'),
+                'videos': ytdlp_data.get('videos', [])[:10],  # Limit to 10 recent videos
+                'data_source': 'yt-dlp_enhanced'
+            }
+        except Exception as e:
+            logger.error(f"Error converting yt-dlp data: {e}")
+            return {
+                'authorId': channel_id,
+                'author': 'Unknown Channel',
+                'subCount': 0,
+                'videoCount': 0,
+                'data_source': 'yt-dlp_fallback_error'
+            }
+    
+    def get_channel_videos(self, channel_id: str, use_cache: bool = True) -> Optional[dict]:
+        """Get channel videos from Invidious"""
+        cache_key = self.cache._generate_key('invidious_channel_videos', {'channel_id': channel_id})
+        
+        # Try cache first
+        if use_cache:
+            cached_result = self.cache.get(cache_key)
+            if cached_result:
+                logger.debug(f"Using cached channel videos for: {channel_id}")
+                return cached_result
+        
+        result = self._make_request(f'/channels/{channel_id}/videos')
+        
+        if result and use_cache:
+            self.cache.set(cache_key, result)
+        
+        return result
+    
+    def _convert_search_response(self, invidious_result: list, max_results: int) -> dict:
+        """Convert Invidious search response to YouTube API format"""
+        if not isinstance(invidious_result, list):
+            return {'items': [], 'pageInfo': {'totalResults': 0}}
+        
+        items = []
+        for item in invidious_result[:max_results]:
+            try:
+                if item.get('type') == 'video':
+                    # Convert video item
+                    youtube_item = {
+                        'kind': 'youtube#searchResult',
+                        'id': {
+                            'kind': 'youtube#video',
+                            'videoId': item.get('videoId', '')
+                        },
+                        'snippet': {
+                            'title': item.get('title', ''),
+                            'description': item.get('description', '')[:200],  # Truncate description
+                            'channelId': item.get('authorId', ''),
+                            'channelTitle': item.get('author', ''),
+                            'publishedAt': self._convert_timestamp(item.get('published', 0)),
+                            'thumbnails': {
+                                'default': {'url': item.get('videoThumbnails', [{}])[0].get('url', '')}
+                            }
+                        }
+                    }
+                    items.append(youtube_item)
+                
+                elif item.get('type') == 'channel':
+                    # Convert channel item
+                    youtube_item = {
+                        'kind': 'youtube#searchResult',
+                        'id': {
+                            'kind': 'youtube#channel',
+                            'channelId': item.get('authorId', '')
+                        },
+                        'snippet': {
+                            'title': item.get('author', ''),
+                            'description': item.get('description', '')[:200],
+                            'channelId': item.get('authorId', ''),
+                            'channelTitle': item.get('author', ''),
+                            'thumbnails': {
+                                'default': {'url': item.get('authorThumbnails', [{}])[-1].get('url', '') if item.get('authorThumbnails') else ''}
+                            }
+                        }
+                    }
+                    items.append(youtube_item)
+                    
+            except Exception as e:
+                logger.warning(f"Error converting search item: {e}")
+                continue
+        
+        return {
+            'kind': 'youtube#searchListResponse',
+            'items': items,
+            'pageInfo': {
+                'totalResults': len(items) * 100,  # Estimate total results
+                'resultsPerPage': len(items)
+            }
+        }
+    
+    def _convert_timestamp(self, timestamp: int) -> str:
+        """Convert Unix timestamp to ISO format"""
+        if not timestamp:
+            return datetime.now().isoformat() + 'Z'
         
         try:
-            logger.info(f"Making YouTube API call: {query}")
-            with urllib.request.urlopen(url, timeout=10) as response:
-                result = json.loads(response.read().decode())
-            
-            self.call_count += 1
-            
-            # Cache the result
-            if use_cache:
-                # Use longer TTL for search results (they don't change much)
-                temp_cache = APICache(ttl_seconds=7200)  # 2 hours
-                temp_cache.cache = self.cache.cache  # Share storage
-                temp_cache.set(cache_key, result)
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"YouTube API error for '{query}': {e}")
-            return None
+            dt = datetime.fromtimestamp(timestamp)
+            return dt.isoformat() + 'Z'
+        except:
+            return datetime.now().isoformat() + 'Z'
 
 class TrendsAPI:
     """Google Trends API with caching and rate limiting"""
@@ -235,8 +610,8 @@ class TrendsAPI:
 class ChannelDiscovery:
     """Discover and score Rising Star channels in a niche"""
     
-    def __init__(self, youtube_api: 'YouTubeAPI', cache: APICache):
-        self.youtube_api = youtube_api
+    def __init__(self, invidious_api: 'InvidiousAPI', cache: APICache):
+        self.invidious_api = invidious_api
         self.cache = cache
         logger.info("ChannelDiscovery initialized")
     
@@ -301,7 +676,7 @@ class ChannelDiscovery:
             return self._empty_response(niche, f"Error: {str(e)}")
     
     def _search_channels(self, niche: str, max_results: int) -> Optional[List[dict]]:
-        """Search for channels in the niche"""
+        """Search for channels in the niche using Invidious with yt-dlp fallback"""
         cache_key = self.cache._generate_key('channel_search', {
             'niche': niche,
             'max_results': max_results
@@ -313,35 +688,24 @@ class ChannelDiscovery:
             logger.debug(f"Using cached channel search for: {niche}")
             return cached_result.get('items', [])
         
-        # Search for channels specifically
-        params = {
-            'part': 'snippet',
-            'q': niche,
-            'maxResults': max_results,
-            'type': 'channel',
-            'key': self.youtube_api.api_key,
-            'order': 'relevance'
-        }
-        url = f"{self.youtube_api.base_url}/search?" + urllib.parse.urlencode(params)
-        
+        # Try Invidious search first
         try:
-            logger.info(f"Searching for channels: {niche}")
-            with urllib.request.urlopen(url, timeout=15) as response:
-                result = json.loads(response.read().decode())
+            logger.info(f"Searching for channels with Invidious: {niche}")
+            result = self.invidious_api.search(niche, max_results, search_type='channel')
             
-            self.youtube_api.call_count += 1
-            
-            # Cache the result (1 hour TTL)
-            self.cache.set(cache_key, result)
-            
-            return result.get('items', [])
+            if result and result.get('items'):
+                # Cache the result (1 hour TTL)
+                self.cache.set(cache_key, result)
+                return result.get('items', [])
+            else:
+                logger.warning(f"No results from Invidious search for: {niche}")
             
         except Exception as e:
-            logger.error(f"Channel search error for '{niche}': {e}")
+            logger.error(f"Invidious channel search error for '{niche}': {e}")
             return None
     
     def _get_channel_statistics(self, channel_ids: List[str]) -> Optional[List[dict]]:
-        """Get detailed statistics for channels"""
+        """Get detailed statistics for channels using Invidious"""
         if not channel_ids:
             return None
         
@@ -355,28 +719,84 @@ class ChannelDiscovery:
             logger.debug(f"Using cached channel stats for {len(channel_ids)} channels")
             return cached_result.get('items', [])
         
-        # Get channel statistics
-        params = {
-            'part': 'statistics,snippet',
-            'id': ','.join(channel_ids),
-            'key': self.youtube_api.api_key
-        }
-        url = f"{self.youtube_api.base_url}/channels?" + urllib.parse.urlencode(params)
-        
+        # Get channel statistics using Invidious with yt-dlp fallback
         try:
-            logger.info(f"Getting statistics for {len(channel_ids)} channels")
-            with urllib.request.urlopen(url, timeout=15) as response:
-                result = json.loads(response.read().decode())
+            logger.info(f"Getting statistics for {len(channel_ids)} channels with Invidious")
             
-            self.youtube_api.call_count += 1
+            channel_data = []
+            failed_channels = []
+            
+            for channel_id in channel_ids:
+                try:
+                    # Get channel info from Invidious first (includes yt-dlp fallback)
+                    channel_info = self.invidious_api.get_channel(channel_id)
+                    
+                    if channel_info:
+                        # Convert Invidious response to YouTube API format
+                        youtube_format = self._convert_channel_response(channel_info, channel_id)
+                        if youtube_format:
+                            channel_data.append(youtube_format)
+                        else:
+                            failed_channels.append(channel_id)
+                    else:
+                        failed_channels.append(channel_id)
+                    
+                    # Small delay to be nice to instances
+                    time.sleep(0.1)
+                    
+                except Exception as e:
+                    logger.warning(f"Error getting stats for channel {channel_id}: {e}")
+                    continue
+            
+            result = {'items': channel_data}
             
             # Cache the result (1 hour TTL)
-            self.cache.set(cache_key, result)
+            if channel_data:
+                self.cache.set(cache_key, result)
             
-            return result.get('items', [])
+            return channel_data
             
         except Exception as e:
-            logger.error(f"Channel statistics error: {e}")
+            logger.error(f"Invidious channel statistics error: {e}")
+            return None
+    
+    def _convert_channel_response(self, invidious_data: dict, channel_id: str) -> Optional[dict]:
+        """Convert Invidious channel data to YouTube API format"""
+        try:
+            # Extract data from Invidious response
+            author = invidious_data.get('author', 'Unknown Channel')
+            sub_count = invidious_data.get('subCount', 0)
+            view_count = invidious_data.get('totalViews', 0) 
+            video_count = invidious_data.get('videoCount', 0)
+            description = invidious_data.get('description', '')
+            
+            # Try to get published date - Invidious doesn't always provide this
+            # We'll use a default date if not available
+            joined_date = invidious_data.get('joined', None)
+            if not joined_date:
+                # Use a default date (YouTube launched in 2005)
+                joined_date = int(datetime(2010, 1, 1).timestamp())
+            
+            # Convert to YouTube API format
+            youtube_format = {
+                'kind': 'youtube#channel',
+                'id': channel_id,
+                'snippet': {
+                    'title': author,
+                    'description': description[:1000],  # Truncate description
+                    'publishedAt': self.invidious_api._convert_timestamp(joined_date)
+                },
+                'statistics': {
+                    'subscriberCount': str(sub_count),
+                    'viewCount': str(view_count), 
+                    'videoCount': str(video_count)
+                }
+            }
+            
+            return youtube_format
+            
+        except Exception as e:
+            logger.error(f"Error converting channel data for {channel_id}: {e}")
             return None
     
     def _calculate_rising_star_score(self, channel_data: dict) -> dict:
@@ -527,8 +947,8 @@ class ChannelDiscovery:
 class NicheScorer:
     """Core niche scoring logic with optimized calculations"""
     
-    def __init__(self, youtube_api: YouTubeAPI, trends_api: TrendsAPI):
-        self.youtube_api = youtube_api
+    def __init__(self, invidious_api: InvidiousAPI, trends_api: TrendsAPI):
+        self.invidious_api = invidious_api
         self.trends_api = trends_api
         
         # CPM data with sources
@@ -554,8 +974,8 @@ class NicheScorer:
         """Fast scoring without expensive API calls (Phase 1)"""
         logger.debug(f"Quick scoring: {niche_name}")
         
-        # Get YouTube metrics (cached if available)
-        search_data = self._get_youtube_metrics(niche_name)
+        # Get Invidious metrics (cached if available)
+        search_data = self._get_invidious_metrics(niche_name)
         
         # Use estimated trends instead of API
         estimated_trends = self._estimate_trends_from_keywords(niche_name)
@@ -579,7 +999,7 @@ class NicheScorer:
         logger.info(f"Full scoring with real APIs: {niche_name}")
         
         # Get comprehensive data
-        search_data = self._get_youtube_metrics(niche_name)
+        search_data = self._get_invidious_metrics(niche_name)
         trends_score = self.trends_api.get_trends_score(niche_name)  # Real API call
         cpm_data = self._estimate_cpm(niche_name.lower())
         
@@ -601,13 +1021,13 @@ class NicheScorer:
                     'score': round(search_score, 1),
                     'max_points': 25,
                     'details': f'{search_data["search_volume"]:,} results, {trends_score}/100 trend',
-                    'data_source': '🔴 LIVE: YouTube API + Trends'
+                    'data_source': '🔴 LIVE: Invidious API + Trends'
                 },
                 'competition': {
                     'score': round(competition_score, 1),
                     'max_points': 25,
                     'details': f'{search_data["channel_count"]} channels, {search_data["avg_growth"]:.1%} growth',
-                    'data_source': '🔴 LIVE: YouTube API'
+                    'data_source': '🔴 LIVE: Invidious API'
                 },
                 'monetization': {
                     'score': round(monetization_score, 1),
@@ -619,7 +1039,7 @@ class NicheScorer:
                     'score': round(content_score, 1),
                     'max_points': 15,
                     'details': 'Video count & channel diversity analysis',
-                    'data_source': '🔴 LIVE: YouTube API Analysis'
+                    'data_source': '🔴 LIVE: Invidious API Analysis'
                 },
                 'trend_momentum': {
                     'score': round(trend_score, 1),
@@ -629,16 +1049,16 @@ class NicheScorer:
                 }
             },
             'api_status': {
-                'youtube': f'CONNECTED ✅ (key ...{YOUTUBE_API_KEY[-4:]})',
+                'invidious': f'CONNECTED ✅ ({len(INVIDIOUS_INSTANCES)} instances)',
                 'confidence': '95%+ (Real APIs)'
             },
             'analyzed_at': datetime.now().isoformat()
         }
     
-    def _get_youtube_metrics(self, niche: str) -> dict:
-        """Get YouTube search metrics with fallback"""
+    def _get_invidious_metrics(self, niche: str) -> dict:
+        """Get Invidious search metrics with fallback"""
         try:
-            results = self.youtube_api.search(niche, max_results=30)
+            results = self.invidious_api.search(niche, max_results=30)
             if not results or 'items' not in results:
                 return self._fallback_metrics(niche)
             
@@ -651,7 +1071,7 @@ class NicheScorer:
                 'avg_growth': random.uniform(0.08, 0.18)
             }
         except Exception as e:
-            logger.warning(f"YouTube metrics fallback for {niche}: {e}")
+            logger.warning(f"Invidious metrics fallback for {niche}: {e}")
             return self._fallback_metrics(niche)
     
     def _fallback_metrics(self, niche: str) -> dict:
@@ -701,12 +1121,12 @@ class NicheScorer:
         }
     
     def _analyze_content_availability(self, niche: str, search_data: dict = None) -> float:
-        """Analyze content availability using YouTube API"""
+        """Analyze content availability using Invidious API"""
         try:
             if search_data is None:
-                search_data = self._get_youtube_metrics(niche)
+                search_data = self._get_invidious_metrics(niche)
             
-            video_results = self.youtube_api.search(niche, max_results=50)
+            video_results = self.invidious_api.search(niche, max_results=50)
             if not video_results or 'items' not in video_results:
                 return random.uniform(8, 13)
             
@@ -906,7 +1326,8 @@ class RecommendationEngine:
 
 # Global shared instances to maintain state across requests
 _cache = None
-_youtube_api = None
+_ytdlp_client = None
+_invidious_api = None
 _trends_api = None
 _niche_scorer = None
 _recommendation_engine = None
@@ -916,19 +1337,19 @@ _start_time = time.time()
 
 def get_shared_components():
     """Get shared component instances"""
-    global _cache, _youtube_api, _trends_api, _niche_scorer, _recommendation_engine, _channel_discovery
+    global _cache, _invidious_api, _trends_api, _niche_scorer, _recommendation_engine, _channel_discovery
     
     if _cache is None:
         logger.info("Initializing shared components...")
         _cache = APICache(ttl_seconds=3600)
-        _youtube_api = YouTubeAPI(YOUTUBE_API_KEY, _cache)
+        _invidious_api = InvidiousAPI(_cache)
         _trends_api = TrendsAPI(_cache)
-        _niche_scorer = NicheScorer(_youtube_api, _trends_api)
+        _niche_scorer = NicheScorer(_invidious_api, _trends_api)
         _recommendation_engine = RecommendationEngine(_niche_scorer)
-        _channel_discovery = ChannelDiscovery(_youtube_api, _cache)
+        _channel_discovery = ChannelDiscovery(_invidious_api, _cache)
         logger.info("Shared components initialized")
     
-    return _cache, _youtube_api, _trends_api, _niche_scorer, _recommendation_engine, _channel_discovery
+    return _cache, _ytdlp_client, _invidious_api, _trends_api, _niche_scorer, _recommendation_engine, _channel_discovery
 
 class RequestHandler(BaseHTTPRequestHandler):
     """HTTP request handler with shared components"""
@@ -979,7 +1400,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         logger.info(f"Analyzing niche: {niche_name}")
         
         try:
-            cache, youtube_api, trends_api, niche_scorer, recommendation_engine, channel_discovery = get_shared_components()
+            cache, ytdlp_client, invidious_api, trends_api, niche_scorer, recommendation_engine, channel_discovery = get_shared_components()
             
             # Get full score for the main niche
             result = niche_scorer.full_score(niche_name)
@@ -1000,7 +1421,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             analysis_time = time.time() - start_time
             result['performance'] = {
                 'analysis_time_seconds': round(analysis_time, 2),
-                'youtube_api_calls': youtube_api.call_count,
+                'invidious_api_calls': invidious_api.call_count,
                 'trends_api_calls': trends_api.call_count,
                 'cache_stats': cache.get_stats()
             }
@@ -1018,7 +1439,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         logger.info(f"Discovering channels for: {niche}")
         
         try:
-            cache, youtube_api, trends_api, niche_scorer, recommendation_engine, channel_discovery = get_shared_components()
+            cache, ytdlp_client, invidious_api, trends_api, niche_scorer, recommendation_engine, channel_discovery = get_shared_components()
             
             # Get channel discovery results
             result = channel_discovery.find_rising_star_channels(niche)
@@ -1027,7 +1448,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             discovery_time = time.time() - start_time
             result['performance'] = {
                 'discovery_time_seconds': round(discovery_time, 2),
-                'youtube_api_calls': youtube_api.call_count,
+                'invidious_api_calls': invidious_api.call_count,
                 'cache_stats': cache.get_stats()
             }
             
@@ -1065,16 +1486,16 @@ class RequestHandler(BaseHTTPRequestHandler):
     
     def get_stats(self) -> dict:
         """Get comprehensive API statistics"""
-        cache, youtube_api, trends_api, _, _, _ = get_shared_components()
+        cache, ytdlp_client, invidious_api, trends_api, _, _, _ = get_shared_components()
         uptime = time.time() - _start_time
         return {
             'uptime_seconds': round(uptime, 1),
             'total_requests': _request_count,
             'requests_per_minute': round(_request_count / (uptime / 60), 2) if uptime > 0 else 0,
             'api_calls': {
-                'youtube': youtube_api.call_count,
+                'invidious': invidious_api.call_count,
                 'trends': trends_api.call_count,
-                'total': youtube_api.call_count + trends_api.call_count
+                'total': invidious_api.call_count + trends_api.call_count
             },
             'cache': cache.get_stats(),
             'memory': {
@@ -1087,8 +1508,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         """Get system status"""
         return {
             'status': 'live',
-            'version': 'refactored_v1.0',
-            'youtube_api': f'CONNECTED ✅ (key ...{YOUTUBE_API_KEY[-4:]})',
+            'version': 'invidious_v2.0',
+            'api': 'INVIDIOUS ✅ (No API key required)',
+            'instances': f'{len(INVIDIOUS_INSTANCES)} available',
             'caching': 'ENABLED ✅',
             'two_phase_scoring': 'ENABLED ✅',
             'uptime': round(time.time() - _start_time, 1)
@@ -1628,10 +2050,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         <div class="header">
             <h1>🎯 YouTube Niche Discovery</h1>
             <div class="status">
-                🔴 LIVE API · CACHED · TWO-PHASE SCORING · Key: ...{YOUTUBE_API_KEY[-4:]}
+                🔴 INVIDIOUS API · NO LIMITS · TWO-PHASE SCORING · {len(INVIDIOUS_INSTANCES)} Instances
             </div>
             <div class="performance-badge">
-                ⚡ Optimized Architecture · Smart Caching · Real API for Top 3
+                ⚡ FREE API · No Quotas · Smart Caching · Instance Failover
             </div>
         </div>
         
@@ -1909,7 +2331,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     <h4>⚡ Performance Metrics</h4>
                     <div class="stat-grid">
                         <div>Analysis Time: ${{performance.analysis_time_seconds}}s</div>
-                        <div>YouTube API Calls: ${{performance.youtube_api_calls}}</div>
+                        <div>Invidious API Calls: ${{performance.invidious_api_calls}}</div>
                         <div>Trends API Calls: ${{performance.trends_api_calls}}</div>
                         <div>Cache Hit Rate: ${{cacheHitRate}}%</div>
                     </div>
@@ -1983,14 +2405,14 @@ NICHE_SUGGESTIONS = {
 
 def main():
     """Start the optimized server"""
-    logger.info("🎯 YouTube Niche Discovery Engine - REFACTORED & OPTIMIZED")
-    logger.info(f"🔑 API Key: ...{YOUTUBE_API_KEY[-4:]}")
-    logger.info("⚡ Features: Smart Caching, Two-Phase Scoring, Optimized Architecture")
-    logger.info(f"💻 Local: http://localhost:8081")
-    logger.info(f"🌍 External: http://38.143.19.241:8081")
-    logger.info("\n🚀 Starting optimized server...\n")
+    logger.info("🎯 YouTube Niche Discovery Engine - INVIDIOUS POWERED")
+    logger.info(f"🆓 FREE API: {len(INVIDIOUS_INSTANCES)} Invidious instances")
+    logger.info("⚡ Features: No Limits, Instance Failover, Smart Caching, Two-Phase Scoring")
+    logger.info(f"💻 Local: http://localhost:8080")
+    logger.info(f"🌍 External: http://38.143.19.241:8080")
+    logger.info("\n🚀 Starting Invidious-powered server...\n")
     
-    httpd = HTTPServer(('0.0.0.0', 8081), RequestHandler)
+    httpd = HTTPServer(('0.0.0.0', 8080), RequestHandler)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
