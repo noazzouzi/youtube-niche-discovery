@@ -615,46 +615,97 @@ class ChannelDiscovery:
         self.cache = cache
         logger.info("ChannelDiscovery initialized")
     
-    def find_rising_star_channels(self, niche: str, max_results: int = 20) -> dict:
-        """Find rising star channels in a niche"""
-        logger.info(f"Finding rising star channels for: {niche}")
+    def find_rising_star_channels(self, niche: str, max_results: int = 50) -> dict:
+        """Find rising star channels in a niche using optimized video metadata approach"""
+        logger.info(f"Finding rising star channels for: {niche} (OPTIMIZED)")
         start_time = time.time()
         
         try:
-            # Step 1: Search for channels in the niche
-            search_results = self._search_channels(niche, max_results)
-            if not search_results:
-                return self._empty_response(niche, "No search results found")
+            # Step 1: Search for videos (this already gets channel data!)
+            videos = self.ytdlp_data_source.search(niche, max_results, search_type='video')
+            if not videos or not videos.get('items'):
+                return self._empty_response(niche, "No video search results found")
             
-            # Step 2: Get channel statistics for found channels
-            channel_ids = [item['id']['channelId'] for item in search_results 
-                          if item['id']['kind'] == 'youtube#channel']
+            # Step 2: Aggregate channel stats from video results  
+            channels = {}
+            for video in videos['items']:
+                if video.get('id', {}).get('kind') != 'youtube#video':
+                    continue
+                    
+                snippet = video.get('snippet', {})
+                ch_id = snippet.get('channelId')
+                if not ch_id:
+                    continue
+                    
+                if ch_id not in channels:
+                    channels[ch_id] = {
+                        'name': snippet.get('channelTitle', 'Unknown'),
+                        'channel_id': ch_id,
+                        'subscribers': 0,  # Will be estimated from video metadata
+                        'total_views': 0,
+                        'video_count': 0,
+                        'latest_upload': None,
+                        'url': f"https://youtube.com/channel/{ch_id}",
+                        'videos': []
+                    }
+                
+                # Aggregate stats (note: individual video views not available in search)
+                channels[ch_id]['video_count'] += 1
+                channels[ch_id]['videos'].append(video)
+                
+                # Track latest upload
+                published_at = snippet.get('publishedAt')
+                if published_at:
+                    if not channels[ch_id]['latest_upload'] or published_at > channels[ch_id]['latest_upload']:
+                        channels[ch_id]['latest_upload'] = published_at
             
-            if not channel_ids:
-                return self._empty_response(niche, "No channels found in search")
+            # Step 3: Get detailed video info for top channels to extract subscriber counts
+            # Sort by video count first to prioritize active channels
+            channel_list = list(channels.values())
+            channel_list.sort(key=lambda x: x['video_count'], reverse=True)
             
-            # Limit to first 10 channels to avoid API quotas
-            channel_ids = channel_ids[:10]
-            channel_stats = self._get_channel_statistics(channel_ids)
-            
-            if not channel_stats:
-                return self._empty_response(niche, "Could not retrieve channel statistics")
-            
-            # Step 3: Calculate rising star scores and format results
-            rising_stars = []
-            for channel_data in channel_stats:
+            # Get detailed info for top 10 channels to extract subscriber data
+            for i, channel_data in enumerate(channel_list[:10]):
                 try:
-                    channel_info = self._calculate_rising_star_score(channel_data)
-                    if channel_info['rising_star_score'] >= 50:  # Minimum threshold
-                        rising_stars.append(channel_info)
+                    # Get one video's detailed metadata to extract channel follower count
+                    first_video = channel_data['videos'][0]
+                    video_id = first_video.get('id', {}).get('videoId')
+                    if video_id:
+                        video_url = f"https://youtube.com/watch?v={video_id}"
+                        video_info = self.ytdlp_data_source.get_video_info(video_url, use_cache=True)
+                        if video_info:
+                            # Extract subscriber count from video metadata
+                            channel_data['subscribers'] = video_info.get('channel_follower_count', 0)
+                            # Estimate total views based on channel data
+                            if video_info.get('view_count'):
+                                # Rough estimate: multiply by video count
+                                avg_views = video_info.get('view_count', 0)
+                                channel_data['total_views'] = avg_views * channel_data['video_count']
+                    
+                    # Small delay to be nice
+                    if i < 9:
+                        time.sleep(0.2)
+                        
                 except Exception as e:
-                    logger.warning(f"Error processing channel {channel_data.get('id', 'unknown')}: {e}")
+                    logger.warning(f"Error getting video details for channel {channel_data['channel_id']}: {e}")
+                    # Set fallback values
+                    channel_data['subscribers'] = 0
+                    channel_data['total_views'] = 0
+            
+            # Step 4: Calculate rising star scores  
+            rising_stars = []
+            for ch_id, ch_data in channels.items():
+                try:
+                    score = self._calculate_rising_star_score_from_aggregated_data(ch_data)
+                    ch_data['rising_star_score'] = score
+                    if score >= 50:  # Minimum threshold
+                        rising_stars.append(ch_data)
+                except Exception as e:
+                    logger.warning(f"Error scoring channel {ch_id}: {e}")
                     continue
             
-            # Sort by rising star score
+            # Step 5: Sort and return top channels
             rising_stars.sort(key=lambda x: x['rising_star_score'], reverse=True)
-            
-            # Take top 10
             top_rising_stars = rising_stars[:10]
             
             analysis_time = time.time() - start_time
@@ -663,10 +714,11 @@ class ChannelDiscovery:
                 'niche': niche,
                 'channels': top_rising_stars,
                 'analysis': {
-                    'total_channels_found': len(channel_ids),
+                    'total_channels_found': len(channels),
                     'rising_stars_identified': len(top_rising_stars),
                     'best_opportunity': top_rising_stars[0]['name'] if top_rising_stars else None,
-                    'analysis_time': round(analysis_time, 2)
+                    'analysis_time': round(analysis_time, 2),
+                    'optimization': 'ENABLED - Using video metadata aggregation'
                 },
                 'success': True
             }
@@ -676,89 +728,16 @@ class ChannelDiscovery:
             return self._empty_response(niche, f"Error: {str(e)}")
     
     def _search_channels(self, niche: str, max_results: int) -> Optional[List[dict]]:
-        """Search for channels in the niche using Invidious with yt-dlp fallback"""
-        cache_key = self.cache._generate_key('channel_search', {
-            'niche': niche,
-            'max_results': max_results
-        })
-        
-        # Try cache first
-        cached_result = self.cache.get(cache_key)
-        if cached_result:
-            logger.debug(f"Using cached channel search for: {niche}")
-            return cached_result.get('items', [])
-        
-        # Search using yt-dlp
-        try:
-            logger.info(f"Searching for channels with yt-dlp: {niche}")
-            result = self.ytdlp_data_source.search(niche, max_results, search_type='channel')
-            
-            if result and result.get('items'):
-                # Cache the result (1 hour TTL)
-                self.cache.set(cache_key, result)
-                return result.get('items', [])
-            else:
-                logger.warning(f"No results from yt-dlp search for: {niche}")
-            
-        except Exception as e:
-            logger.error(f"yt-dlp channel search error for '{niche}': {e}")
-            return None
+        """DEPRECATED: Use video search instead to get channel data from video metadata"""
+        logger.warning("DEPRECATED: _search_channels() replaced by video search optimization")
+        return None  # Disabled to force use of optimized method
     
     def _get_channel_statistics(self, channel_ids: List[str]) -> Optional[List[dict]]:
-        """Get detailed statistics for channels using Invidious"""
-        if not channel_ids:
-            return None
-        
-        cache_key = self.cache._generate_key('channel_stats', {
-            'channel_ids': sorted(channel_ids)
-        })
-        
-        # Try cache first
-        cached_result = self.cache.get(cache_key)
-        if cached_result:
-            logger.debug(f"Using cached channel stats for {len(channel_ids)} channels")
-            return cached_result.get('items', [])
-        
-        # Get channel statistics using yt-dlp
-        try:
-            logger.info(f"Getting statistics for {len(channel_ids)} channels with yt-dlp")
-            
-            channel_data = []
-            failed_channels = []
-            
-            for channel_id in channel_ids:
-                try:
-                    # Get channel info using yt-dlp
-                    channel_info = self.ytdlp_data_source.get_channel(channel_id)
-                    
-                    if channel_info:
-                        # Convert yt-dlp response to YouTube API format (already done by YtDlpDataSource)
-                        youtube_format = self._convert_ytdlp_channel_response(channel_info, channel_id)
-                        if youtube_format:
-                            channel_data.append(youtube_format)
-                        else:
-                            failed_channels.append(channel_id)
-                    else:
-                        failed_channels.append(channel_id)
-                    
-                    # Small delay to be nice to instances
-                    time.sleep(0.1)
-                    
-                except Exception as e:
-                    logger.warning(f"Error getting stats for channel {channel_id}: {e}")
-                    continue
-            
-            result = {'items': channel_data}
-            
-            # Cache the result (1 hour TTL)
-            if channel_data:
-                self.cache.set(cache_key, result)
-            
-            return channel_data
-            
-        except Exception as e:
-            logger.error(f"yt-dlp channel statistics error: {e}")
-            return None
+        """DEPRECATED: Slow method that fetches each channel individually (25-30s each!)
+        Use find_rising_star_channels() optimized method instead.
+        """
+        logger.warning("DEPRECATED: _get_channel_statistics() is slow. Use optimized find_rising_star_channels() instead.")
+        return None  # Disabled to force use of optimized method
     
     def _convert_ytdlp_channel_response(self, ytdlp_data: dict, channel_id: str) -> Optional[dict]:
         """Convert yt-dlp channel data to YouTube API format"""
@@ -798,6 +777,43 @@ class ChannelDiscovery:
         except Exception as e:
             logger.error(f"Error converting yt-dlp channel data for {channel_id}: {e}")
             return None
+    
+    def _calculate_rising_star_score_from_aggregated_data(self, channel: dict) -> float:
+        """Calculate rising star score for aggregated channel data"""
+        subscribers = channel.get('subscribers', 0)
+        total_views = channel.get('total_views', 0)
+        video_count = channel.get('video_count', 0)
+        
+        # Views per subscriber (viral potential) - max 40 points
+        if subscribers > 0:
+            views_per_sub = total_views / subscribers
+            viral_score = min(views_per_sub / 10, 40)  # Max 40 pts
+        else:
+            viral_score = 20  # Unknown subs, moderate score
+        
+        # Low subscriber bonus (opportunity) - max 30 points
+        if subscribers == 0:
+            size_score = 25  # Unknown, give benefit of doubt
+        elif subscribers < 10000:
+            size_score = 30
+        elif subscribers < 50000:
+            size_score = 25
+        elif subscribers < 100000:
+            size_score = 20
+        else:
+            size_score = 10
+        
+        # Activity score (based on videos in search results) - max 30 points
+        if video_count >= 5:
+            activity_score = 30
+        elif video_count >= 3:
+            activity_score = 25
+        elif video_count >= 2:
+            activity_score = 20
+        else:
+            activity_score = 15
+        
+        return viral_score + size_score + activity_score
     
     def _calculate_rising_star_score(self, channel_data: dict) -> dict:
         """Calculate rising star score for a channel"""
