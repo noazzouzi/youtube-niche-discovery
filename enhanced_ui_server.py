@@ -430,7 +430,7 @@ class InvidiousAPI:
                 'subCount': ytdlp_data.get('channel_follower_count', 0),
                 'videoCount': len(ytdlp_data.get('videos', [])),
                 'description': f"Channel data enhanced via yt-dlp",
-                'authorUrl': ytdlp_data.get('channel_url', f'https://www.youtube.com/channel/{channel_id}'),
+                'authorUrl': ytdlp_data.get('channel_url') or f'https://www.youtube.com/channel/{channel_id}',
                 'videos': ytdlp_data.get('videos', [])[:10],  # Limit to 10 recent videos
                 'data_source': 'yt-dlp_enhanced'
             }
@@ -638,6 +638,8 @@ class ChannelDiscovery:
                     continue
                     
                 if ch_id not in channels:
+                    # Use @ handle URL if available, otherwise fall back to channel ID
+                    channel_url = snippet.get('channelUrl', f"https://www.youtube.com/channel/{ch_id}")
                     channels[ch_id] = {
                         'name': snippet.get('channelTitle', 'Unknown'),
                         'channel_id': ch_id,
@@ -645,7 +647,7 @@ class ChannelDiscovery:
                         'total_views': 0,
                         'video_count': 0,
                         'latest_upload': None,
-                        'url': f"https://www.youtube.com/channel/{ch_id}",
+                        'url': channel_url,
                         'videos': []
                     }
                 
@@ -898,10 +900,13 @@ class ChannelDiscovery:
         else:
             age_display = f"{channel_age_years:.1f} years"
         
+        # Use @ handle URL if available, otherwise fall back to channel ID
+        channel_url = snippet.get('channelUrl', f"https://www.youtube.com/channel/{channel_id}")
+        
         return {
             'name': name,
             'channel_id': channel_id,
-            'url': f"https://www.youtube.com/channel/{channel_id}",
+            'url': channel_url,
             'subscribers': subscribers,
             'total_views': total_views,
             'video_count': video_count,
@@ -1534,23 +1539,21 @@ class RequestHandler(BaseHTTPRequestHandler):
     
     def _get_recommendation_text(self, score: float) -> str:
         """Get recommendation text based on score"""
-        if score >= 85: return "🔥 GOLDMINE: Immediate action recommended!"
-        elif score >= 75: return "✅ EXCELLENT: Strong opportunity!"
-        elif score >= 65: return "👍 GOOD: Solid potential"
-        elif score >= 55: return "⚠️ MARGINAL: Test carefully"
-        return "❌ AVOID: Poor metrics"
+        if score >= 85: return "🔥 Excellent niche—high potential for growth!"
+        elif score >= 75: return "✅ Great niche with strong opportunities"
+        elif score >= 65: return "👍 Good niche worth exploring"
+        elif score >= 55: return "⚠️ Moderate potential—research further"
+        return "❌ Challenging niche—consider alternatives"
     
     def serve_ui(self):
         """Serve the HTML user interface"""
-        # Use the same HTML as the original but add performance indicators
         html = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🎯 YouTube Niche Discovery - OPTIMIZED</title>
+    <title>YouTube Niche Discovery</title>
     <style>
-        /* Same CSS as original but with additional performance indicators */
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         
         body {{
@@ -1573,26 +1576,13 @@ class RequestHandler(BaseHTTPRequestHandler):
         
         .header h1 {{
             font-size: 2.5em;
-            margin-bottom: 10px;
+            margin-bottom: 8px;
             text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
         }}
         
-        .header .status {{
-            background: rgba(255,255,255,0.2);
-            padding: 8px 16px;
-            border-radius: 20px;
-            display: inline-block;
-            font-size: 0.9em;
-        }}
-        
-        .performance-badge {{
-            background: rgba(76, 175, 80, 0.9);
-            color: white;
-            padding: 6px 12px;
-            border-radius: 15px;
-            font-size: 0.8em;
-            margin-top: 8px;
-            display: inline-block;
+        .header .tagline {{
+            opacity: 0.9;
+            font-size: 1.1em;
         }}
         
         .card {{
@@ -1672,6 +1662,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             justify-content: space-between;
             align-items: center;
             margin-bottom: 16px;
+            flex-wrap: wrap;
+            gap: 12px;
         }}
         
         .suggestions-header h3 {{
@@ -1732,13 +1724,14 @@ class RequestHandler(BaseHTTPRequestHandler):
         .score-display {{
             display: flex;
             align-items: center;
-            gap: 20px;
-            margin-bottom: 20px;
+            gap: 24px;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
         }}
         
         .score-circle {{
-            width: 100px;
-            height: 100px;
+            width: 120px;
+            height: 120px;
             border-radius: 50%;
             display: flex;
             flex-direction: column;
@@ -1747,33 +1740,42 @@ class RequestHandler(BaseHTTPRequestHandler):
             font-weight: bold;
             color: white;
             flex-shrink: 0;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
         }}
         
         .score-circle .score {{
-            font-size: 2em;
+            font-size: 2.5em;
             line-height: 1;
         }}
         
         .score-circle .grade {{
-            font-size: 0.9em;
+            font-size: 1em;
             opacity: 0.9;
+            margin-top: 4px;
+        }}
+        
+        .score-info {{
+            flex: 1;
+            min-width: 200px;
         }}
         
         .score-info h2 {{
-            font-size: 1.4em;
-            margin-bottom: 8px;
+            font-size: 1.5em;
+            margin-bottom: 12px;
+            color: #333;
         }}
         
         .recommendation {{
-            padding: 12px 16px;
-            border-radius: 8px;
+            padding: 14px 18px;
+            border-radius: 10px;
             font-weight: 500;
+            font-size: 1.05em;
         }}
         
         .breakdown {{
             display: grid;
-            gap: 12px;
-            margin-top: 20px;
+            gap: 14px;
+            margin-top: 24px;
         }}
         
         .breakdown-item {{
@@ -1783,59 +1785,53 @@ class RequestHandler(BaseHTTPRequestHandler):
         }}
         
         .breakdown-label {{
-            width: 140px;
+            width: 120px;
             font-weight: 500;
             color: #555;
+            font-size: 0.95em;
         }}
         
         .breakdown-bar {{
             flex: 1;
-            height: 24px;
+            height: 28px;
             background: #f0f0f0;
-            border-radius: 12px;
+            border-radius: 14px;
             overflow: hidden;
             position: relative;
         }}
         
         .breakdown-fill {{
             height: 100%;
-            border-radius: 12px;
+            border-radius: 14px;
             transition: width 0.5s ease;
         }}
         
         .breakdown-value {{
-            width: 60px;
+            width: 55px;
             text-align: right;
             font-weight: 600;
             color: #333;
-        }}
-        
-        .api-badge {{
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            background: #e8f5e9;
-            color: #2e7d32;
-            padding: 6px 12px;
-            border-radius: 20px;
-            font-size: 0.85em;
-            margin-top: 16px;
+            font-size: 0.95em;
         }}
         
         .loading {{
             text-align: center;
-            padding: 40px;
-            color: #666;
+            padding: 50px 20px;
+            color: #555;
         }}
         
         .loading-spinner {{
-            width: 40px;
-            height: 40px;
-            border: 4px solid #f0f0f0;
+            width: 48px;
+            height: 48px;
+            border: 4px solid #e0e0e0;
             border-top-color: #667eea;
             border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 16px;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 20px;
+        }}
+        
+        .loading p {{
+            font-size: 1.1em;
         }}
         
         @keyframes spin {{
@@ -1843,29 +1839,39 @@ class RequestHandler(BaseHTTPRequestHandler):
         }}
         
         .error {{
-            background: #ffebee;
-            color: #c62828;
-            padding: 16px;
-            border-radius: 8px;
+            background: #fef2f2;
+            color: #991b1b;
+            padding: 20px;
+            border-radius: 12px;
             text-align: center;
+            border: 1px solid #fecaca;
+        }}
+        
+        .error-title {{
+            font-weight: 600;
+            font-size: 1.1em;
+            margin-bottom: 8px;
         }}
         
         .recommendations-section {{
-            margin-top: 20px;
-            padding: 20px;
+            margin-top: 24px;
+            padding: 24px;
             background: #f8f9fa;
-            border-radius: 12px;
-            border: 2px solid #e9ecef;
+            border-radius: 16px;
         }}
         
         .recommendations-header {{
-            display: flex;
-            align-items: center;
-            gap: 10px;
             margin-bottom: 16px;
-            font-size: 1.1em;
+            font-size: 1.15em;
             font-weight: 600;
-            color: #495057;
+            color: #333;
+        }}
+        
+        .recommendations-subtext {{
+            font-size: 0.9em;
+            color: #666;
+            font-weight: 400;
+            margin-top: 4px;
         }}
         
         .recommendations-grid {{
@@ -1877,10 +1883,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 12px 16px;
+            padding: 14px 18px;
             background: white;
-            border-radius: 8px;
-            border: 1px solid #dee2e6;
+            border-radius: 10px;
+            border: 1px solid #e5e7eb;
             transition: all 0.2s;
             cursor: pointer;
         }}
@@ -1889,7 +1895,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             background: #667eea;
             color: white;
             transform: translateX(4px);
-            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.25);
+        }}
+        
+        .recommendation-item:hover .recommendation-score {{
+            color: white;
         }}
         
         .recommendation-niche {{
@@ -1900,114 +1910,99 @@ class RequestHandler(BaseHTTPRequestHandler):
         .recommendation-score {{
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
             font-weight: 600;
-        }}
-        
-        .recommendation-confidence {{
-            font-size: 0.7em;
-            opacity: 0.8;
+            color: #333;
         }}
         
         .recommendation-better {{
-            color: #28a745;
-            font-size: 1.2em;
+            color: #16a34a;
+            font-size: 1.1em;
         }}
         
         .recommendation-worse {{
-            color: #6c757d;
-            font-size: 0.9em;
+            color: #9ca3af;
+            font-size: 0.95em;
         }}
         
         .no-recommendations {{
             text-align: center;
-            color: #6c757d;
-            font-style: italic;
-            padding: 20px;
-        }}
-        
-        .performance-stats {{
-            margin-top: 20px;
-            padding: 15px;
-            background: #f0f8ff;
-            border-radius: 8px;
-            border-left: 4px solid #667eea;
-        }}
-        
-        .performance-stats h4 {{
-            margin-bottom: 8px;
-            color: #495057;
-            font-size: 0.9em;
-        }}
-        
-        .performance-stats .stat-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 8px;
-            font-size: 0.85em;
-            color: #666;
+            color: #6b7280;
+            padding: 24px;
+            background: white;
+            border-radius: 10px;
         }}
         
         .rising-stars-section {{
-            margin-top: 20px;
-            padding: 20px;
-            background: linear-gradient(135deg, #fff8e1 0%, #f3e5f5 100%);
-            border-radius: 12px;
-            border: 2px solid #ff9800;
+            margin-top: 24px;
+            padding: 24px;
+            background: linear-gradient(135deg, #fef9c3 0%, #fce7f3 100%);
+            border-radius: 16px;
         }}
         
         .rising-stars-header {{
+            margin-bottom: 16px;
+        }}
+        
+        .rising-stars-title {{
+            font-size: 1.2em;
+            font-weight: 600;
+            color: #b45309;
             display: flex;
             align-items: center;
-            gap: 10px;
-            margin-bottom: 16px;
-            font-size: 1.1em;
-            font-weight: 600;
-            color: #e65100;
+            gap: 8px;
+        }}
+        
+        .rising-stars-subtitle {{
+            font-size: 0.9em;
+            color: #92400e;
+            margin-top: 4px;
+            font-weight: 400;
         }}
         
         .channel-grid {{
             display: grid;
-            gap: 12px;
+            gap: 14px;
         }}
         
         .channel-card {{
             background: white;
-            border-radius: 8px;
-            padding: 16px;
-            border: 1px solid #ffcc02;
+            border-radius: 12px;
+            padding: 18px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
             transition: all 0.3s;
-            cursor: pointer;
         }}
         
         .channel-card:hover {{
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(255, 152, 0, 0.3);
-            border-color: #ff9800;
+            transform: translateY(-3px);
+            box-shadow: 0 8px 24px rgba(245, 158, 11, 0.2);
         }}
         
         .channel-header {{
             display: flex;
             align-items: center;
             justify-content: space-between;
-            margin-bottom: 12px;
+            margin-bottom: 14px;
+            flex-wrap: wrap;
+            gap: 10px;
         }}
         
         .channel-name {{
             font-weight: 600;
             font-size: 1.1em;
-            color: #e65100;
+            color: #b45309;
             text-decoration: none;
         }}
         
         .channel-name:hover {{
-            color: #ff9800;
+            color: #d97706;
+            text-decoration: underline;
         }}
         
         .rising-star-score {{
-            background: linear-gradient(135deg, #ff9800, #f57c00);
+            background: linear-gradient(135deg, #f59e0b, #d97706);
             color: white;
-            padding: 6px 12px;
+            padding: 6px 14px;
             border-radius: 20px;
             font-weight: 600;
             font-size: 0.9em;
@@ -2015,49 +2010,103 @@ class RequestHandler(BaseHTTPRequestHandler):
         
         .channel-stats {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-            gap: 8px;
-            margin-bottom: 12px;
-            font-size: 0.9em;
+            grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+            gap: 10px;
+            margin-bottom: 14px;
         }}
         
         .channel-stat {{
             text-align: center;
-            padding: 8px;
-            background: #f5f5f5;
-            border-radius: 6px;
+            padding: 10px 8px;
+            background: #fef3c7;
+            border-radius: 8px;
         }}
         
         .stat-value {{
-            font-weight: 600;
-            color: #333;
+            font-weight: 700;
+            color: #92400e;
             display: block;
             font-size: 1.1em;
         }}
         
         .stat-label {{
-            color: #666;
-            font-size: 0.8em;
+            color: #a16207;
+            font-size: 0.75em;
             margin-top: 2px;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
         }}
         
         .channel-explanation {{
-            background: #fff3e0;
-            padding: 10px;
-            border-radius: 6px;
-            border-left: 3px solid #ff9800;
+            background: #fffbeb;
+            padding: 12px 14px;
+            border-radius: 8px;
             font-size: 0.9em;
-            color: #e65100;
-            margin-top: 8px;
+            color: #92400e;
+            line-height: 1.5;
         }}
         
         .no-channels {{
             text-align: center;
-            color: #f57c00;
-            font-style: italic;
-            padding: 20px;
+            color: #a16207;
+            padding: 24px;
             background: white;
-            border-radius: 8px;
+            border-radius: 10px;
+        }}
+        
+        /* Mobile Responsive */
+        @media (max-width: 640px) {{
+            body {{
+                padding: 12px;
+            }}
+            
+            .header h1 {{
+                font-size: 1.8em;
+            }}
+            
+            .card {{
+                padding: 20px;
+            }}
+            
+            .search-section {{
+                flex-direction: column;
+            }}
+            
+            .btn {{
+                justify-content: center;
+            }}
+            
+            .score-display {{
+                flex-direction: column;
+                text-align: center;
+            }}
+            
+            .score-info {{
+                text-align: center;
+            }}
+            
+            .breakdown-item {{
+                flex-wrap: wrap;
+            }}
+            
+            .breakdown-label {{
+                width: 100%;
+                margin-bottom: 4px;
+            }}
+            
+            .breakdown-bar {{
+                min-width: 0;
+            }}
+            
+            .suggestions-header {{
+                flex-direction: column;
+                align-items: flex-start;
+            }}
+            
+            .channel-header {{
+                flex-direction: column;
+                align-items: flex-start;
+            }}
         }}
     </style>
 </head>
@@ -2065,12 +2114,7 @@ class RequestHandler(BaseHTTPRequestHandler):
     <div class="container">
         <div class="header">
             <h1>🎯 YouTube Niche Discovery</h1>
-            <div class="status">
-                🔴 YT-DLP API · NO LIMITS · TWO-PHASE SCORING · Direct Scraping
-            </div>
-            <div class="performance-badge">
-                ⚡ FREE API · No Quotas · Smart Caching · Instance Failover
-            </div>
+            <p class="tagline">Find the best niches for your YouTube channel</p>
         </div>
         
         <div class="card">
@@ -2128,7 +2172,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             }}
             
             btn.disabled = false;
-            btn.innerHTML = '🎲 Suggest Niches';
+            btn.innerHTML = '🎲 More Ideas';
         }}
         
         function selectNiche(niche) {{
@@ -2156,23 +2200,32 @@ class RequestHandler(BaseHTTPRequestHandler):
             resultContent.innerHTML = `
                 <div class="loading">
                     <div class="loading-spinner"></div>
-                    <p>Analyzing "${{niche}}" with optimized two-phase scoring...</p>
+                    <p>Analyzing <strong>"${{niche}}"</strong></p>
+                    <p style="font-size: 0.85em; color: #888; margin-top: 8px;">This may take 10-20 seconds</p>
                 </div>
             `;
+            
+            // Scroll to results on mobile
+            resultCard.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
             
             try {{
                 const res = await fetch('/api/analyze?niche=' + encodeURIComponent(niche));
                 const data = await res.json();
                 
                 if (data.error) {{
-                    resultContent.innerHTML = `<div class="error">${{data.error}}</div>`;
+                    resultContent.innerHTML = `
+                        <div class="error">
+                            <div class="error-title">⚠️ Analysis Failed</div>
+                            <p>${{data.error}}</p>
+                        </div>
+                    `;
                     return;
                 }}
                 
-                const scoreColor = data.total_score >= 75 ? '#4CAF50' : 
-                                   data.total_score >= 60 ? '#FF9800' : '#f44336';
-                const recBg = data.total_score >= 75 ? '#e8f5e9' : 
-                              data.total_score >= 60 ? '#fff3e0' : '#ffebee';
+                const scoreColor = data.total_score >= 75 ? '#16a34a' : 
+                                   data.total_score >= 60 ? '#d97706' : '#dc2626';
+                const recBg = data.total_score >= 75 ? '#dcfce7' : 
+                              data.total_score >= 60 ? '#fef3c7' : '#fee2e2';
                 
                 resultContent.innerHTML = `
                     <div class="score-display">
@@ -2181,7 +2234,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                             <span class="grade">${{data.grade}}</span>
                         </div>
                         <div class="score-info">
-                            <h2>🎯 ${{data.niche_name}}</h2>
+                            <h2>${{data.niche_name}}</h2>
                             <div class="recommendation" style="background: ${{recBg}}">
                                 ${{data.recommendation}}
                             </div>
@@ -2191,23 +2244,22 @@ class RequestHandler(BaseHTTPRequestHandler):
                     <div class="breakdown">
                         ${{renderBreakdown('Search Volume', data.breakdown.search_volume, 25, '#667eea')}}
                         ${{renderBreakdown('Competition', data.breakdown.competition, 25, '#764ba2')}}
-                        ${{renderBreakdown('Monetization', data.breakdown.monetization, 20, '#4CAF50')}}
-                        ${{renderBreakdown('Content', data.breakdown.content_availability, 15, '#FF9800')}}
-                        ${{renderBreakdown('Trends', data.breakdown.trend_momentum, 15, '#2196F3')}}
+                        ${{renderBreakdown('Monetization', data.breakdown.monetization, 20, '#16a34a')}}
+                        ${{renderBreakdown('Content', data.breakdown.content_availability, 15, '#d97706')}}
+                        ${{renderBreakdown('Trends', data.breakdown.trend_momentum, 15, '#0ea5e9')}}
                     </div>
                     
                     ${{renderRisingStarChannels(data.rising_star_channels)}}
                     
                     ${{renderRecommendations(data.recommendations, data.total_score)}}
-                    
-                    ${{renderPerformanceStats(data.performance)}}
-                    
-                    <div class="api-badge">
-                        ✅ ${{data.api_status.youtube}} · ${{data.api_status.confidence}}
-                    </div>
                 `;
             }} catch (err) {{
-                resultContent.innerHTML = `<div class="error">Error: ${{err.message}}</div>`;
+                resultContent.innerHTML = `
+                    <div class="error">
+                        <div class="error-title">⚠️ Something went wrong</div>
+                        <p>Please try again. If the problem persists, try a different niche.</p>
+                    </div>
+                `;
             }}
             
             btn.disabled = false;
@@ -2229,36 +2281,26 @@ class RequestHandler(BaseHTTPRequestHandler):
         
         function renderRisingStarChannels(channelData) {{
             if (!channelData || !channelData.success || !channelData.channels || channelData.channels.length === 0) {{
-                return `
-                    <div class="rising-stars-section">
-                        <div class="rising-stars-header">
-                            🌟 Rising Star Channels
-                        </div>
-                        <div class="no-channels">
-                            ${{channelData?.analysis?.error_reason || 'No rising star channels found in this niche.'}}
-                        </div>
-                    </div>
-                `;
+                return '';
             }}
             
-            const analysis = channelData.analysis || {{}};
             const channels = channelData.channels || [];
             
             return `
                 <div class="rising-stars-section">
                     <div class="rising-stars-header">
-                        🌟 Rising Star Channels (${{channels.length}} found)
-                        <span style="font-size: 0.8em; color: #f57c00;">High opportunity channels punching above their weight</span>
+                        <div class="rising-stars-title">🌟 Rising Star Channels</div>
+                        <div class="rising-stars-subtitle">Growing channels in this niche worth checking out</div>
                     </div>
                     <div class="channel-grid">
                         ${{channels.map(channel => `
-                            <div class="channel-card">
+                            <div class="channel-card" onclick="window.open('${{channel.url}}', '_blank')">
                                 <div class="channel-header">
-                                    <a href="${{channel.url}}" target="_blank" class="channel-name">
+                                    <a href="${{channel.url}}" target="_blank" class="channel-name" onclick="event.stopPropagation()">
                                         ${{channel.name}}
                                     </a>
                                     <div class="rising-star-score">
-                                        Score: ${{channel.rising_star_score}}
+                                        ⭐ ${{Math.round(channel.rising_star_score)}}
                                     </div>
                                 </div>
                                 <div class="channel-stats">
@@ -2271,16 +2313,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                                         <div class="stat-label">Total Views</div>
                                     </div>
                                     <div class="channel-stat">
-                                        <span class="stat-value">${{channel.views_per_subscriber}}</span>
-                                        <div class="stat-label">Views/Sub</div>
+                                        <span class="stat-value">${{channel.video_count || '—'}}</span>
+                                        <div class="stat-label">Videos</div>
                                     </div>
-                                    <div class="channel-stat">
-                                        <span class="stat-value">${{channel.channel_age}}</span>
-                                        <div class="stat-label">Age</div>
-                                    </div>
-                                </div>
-                                <div class="channel-explanation">
-                                    ${{channel.why_rising_star}}
                                 </div>
                             </div>
                         `).join('')}}
@@ -2297,59 +2332,31 @@ class RequestHandler(BaseHTTPRequestHandler):
         
         function renderRecommendations(recommendations, originalScore) {{
             if (!recommendations || recommendations.length === 0) {{
-                return `
-                    <div class="recommendations-section">
-                        <div class="recommendations-header">
-                            💡 Related Niche Recommendations
-                        </div>
-                        <div class="no-recommendations">
-                            No related recommendations found for this niche.
-                        </div>
-                    </div>
-                `;
+                return '';
             }}
             
             const betterCount = recommendations.filter(r => r.better).length;
-            const highConfidenceCount = recommendations.filter(r => r.confidence === 'HIGH (Real APIs)').length;
             
             return `
                 <div class="recommendations-section">
                     <div class="recommendations-header">
-                        💡 Try these related niches: ${{betterCount > 0 ? `(${{betterCount}} perform better!)` : ''}}
-                        <span style="font-size: 0.8em; color: #666;">Top ${{highConfidenceCount}} scored with real APIs</span>
+                        💡 Related Niches to Explore
+                        ${{betterCount > 0 ? `<div class="recommendations-subtext">${{betterCount}} scored higher—worth checking out!</div>` : ''}}
                     </div>
                     <div class="recommendations-grid">
                         ${{recommendations.map(rec => `
                             <div class="recommendation-item" onclick="selectNiche('${{rec.niche}}')">
                                 <div class="recommendation-niche">
                                     ${{rec.niche}}
-                                    <div class="recommendation-confidence">${{rec.confidence}}</div>
                                 </div>
                                 <div class="recommendation-score">
                                     <span>${{rec.score}}</span>
                                     <span class="${{rec.better ? 'recommendation-better' : 'recommendation-worse'}}">
-                                        ${{rec.better ? '✅' : '❌'}}
+                                        ${{rec.better ? '↑' : '↓'}}
                                     </span>
                                 </div>
                             </div>
                         `).join('')}}
-                    </div>
-                </div>
-            `;
-        }}
-        
-        function renderPerformanceStats(performance) {{
-            if (!performance) return '';
-            
-            const cacheHitRate = performance.cache_stats?.hit_rate || 0;
-            return `
-                <div class="performance-stats">
-                    <h4>⚡ Performance Metrics</h4>
-                    <div class="stat-grid">
-                        <div>Analysis Time: ${{performance.analysis_time_seconds}}s</div>
-                        <div>yt-dlp API Calls: ${{performance.yt_dlp_api_calls}}</div>
-                        <div>Trends API Calls: ${{performance.trends_api_calls}}</div>
-                        <div>Cache Hit Rate: ${{cacheHitRate}}%</div>
                     </div>
                 </div>
             `;
@@ -2420,13 +2427,11 @@ NICHE_SUGGESTIONS = {
 }
 
 def main():
-    """Start the optimized server"""
-    logger.info("🎯 YouTube Niche Discovery Engine - YT-DLP POWERED")
-    logger.info("🆓 FREE API: Direct yt-dlp scraping (no dependencies)")
-    logger.info("⚡ Features: Always Works, No Rate Limits, Smart Caching, Two-Phase Scoring")
+    """Start the server"""
+    logger.info("🎯 YouTube Niche Discovery Engine")
     logger.info(f"💻 Local: http://localhost:8080")
     logger.info(f"🌍 External: http://38.143.19.241:8080")
-    logger.info("\n🚀 Starting yt-dlp-powered server...\n")
+    logger.info("🚀 Server starting...")
     
     httpd = HTTPServer(('0.0.0.0', 8080), RequestHandler)
     try:

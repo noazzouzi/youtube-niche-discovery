@@ -349,6 +349,10 @@ class YtDlpDataSource:
                     }
                 else:
                     # Format as video result
+                    # Get channel handle for proper @ URL (uploader_id already includes @ prefix)
+                    uploader_id = item.get('uploader_id', '')
+                    channel_url = f"https://www.youtube.com/{uploader_id}" if uploader_id else f"https://www.youtube.com/channel/{channel_id}"
+                    
                     youtube_item = {
                         'kind': 'youtube#searchResult',
                         'id': {
@@ -360,6 +364,8 @@ class YtDlpDataSource:
                             'description': description,
                             'channelId': channel_id,
                             'channelTitle': channel,
+                            'channelHandle': uploader_id,
+                            'channelUrl': channel_url,
                             'publishedAt': published_at,
                             'thumbnails': {
                                 'default': {'url': item.get('thumbnail', '')}
