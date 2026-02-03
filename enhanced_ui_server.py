@@ -314,7 +314,7 @@ class YtDlpClient:
             return None
         
         # Convert channel ID to URL
-        channel_url = f"https://youtube.com/channel/{channel_id}"
+        channel_url = f"https://www.youtube.com/channel/{channel_id}"
         return self.get_channel_info(channel_url, use_cache)
 
 class InvidiousAPI:
@@ -430,7 +430,7 @@ class InvidiousAPI:
                 'subCount': ytdlp_data.get('channel_follower_count', 0),
                 'videoCount': len(ytdlp_data.get('videos', [])),
                 'description': f"Channel data enhanced via yt-dlp",
-                'authorUrl': ytdlp_data.get('channel_url', f'https://youtube.com/channel/{channel_id}'),
+                'authorUrl': ytdlp_data.get('channel_url', f'https://www.youtube.com/channel/{channel_id}'),
                 'videos': ytdlp_data.get('videos', [])[:10],  # Limit to 10 recent videos
                 'data_source': 'yt-dlp_enhanced'
             }
@@ -645,7 +645,7 @@ class ChannelDiscovery:
                         'total_views': 0,
                         'video_count': 0,
                         'latest_upload': None,
-                        'url': f"https://youtube.com/channel/{ch_id}",
+                        'url': f"https://www.youtube.com/channel/{ch_id}",
                         'videos': []
                     }
                 
@@ -671,7 +671,7 @@ class ChannelDiscovery:
                     first_video = channel_data['videos'][0]
                     video_id = first_video.get('id', {}).get('videoId')
                     if video_id:
-                        video_url = f"https://youtube.com/watch?v={video_id}"
+                        video_url = f"https://www.youtube.com/watch?v={video_id}"
                         video_info = self.ytdlp_data_source.get_video_info(video_url, use_cache=True)
                         if video_info:
                             # Extract subscriber count from video metadata
@@ -901,7 +901,7 @@ class ChannelDiscovery:
         return {
             'name': name,
             'channel_id': channel_id,
-            'url': f"https://youtube.com/channel/{channel_id}",
+            'url': f"https://www.youtube.com/channel/{channel_id}",
             'subscribers': subscribers,
             'total_views': total_views,
             'video_count': video_count,
