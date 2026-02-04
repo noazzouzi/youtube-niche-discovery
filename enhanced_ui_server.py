@@ -914,6 +914,11 @@ class ChannelDiscovery:
             rising_stars = []
             for ch_id, ch_data in channels.items():
                 try:
+                    # FILTER: Only include channels with 20+ min average videos
+                    if not ch_data.get('has_long_videos', False):
+                        logger.debug(f"Skipping {ch_data.get('name', 'unknown')} - avg duration < 20 min")
+                        continue
+                    
                     score = self._calculate_rising_star_score_from_aggregated_data(ch_data)
                     ch_data['rising_star_score'] = score
                     if score >= 50:  # Minimum threshold
