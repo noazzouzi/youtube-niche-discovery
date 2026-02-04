@@ -9,7 +9,7 @@ import json
 # Add the current directory to the path to import our modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from enhanced_ui_server import APICache, YtDlpClient, InvidiousAPI
+from enhanced_ui_server import APICache, YtDlpClient, YouTubeAPI
 
 def test_ytdlp_basic():
     """Test basic yt-dlp functionality"""
@@ -53,25 +53,25 @@ def test_ytdlp_basic():
     
     print(f"\n📊 yt-dlp API calls made: {ytdlp_client.call_count}")
 
-def test_invidious_ytdlp_fallback():
-    """Test Invidious + yt-dlp fallback integration"""
-    print("\n🧪 Testing Invidious + yt-dlp fallback integration...")
+def test_youtube_ytdlp_integration():
+    """Test YouTube API with yt-dlp integration"""
+    print("\n🧪 Testing YouTube API + yt-dlp integration...")
     
     # Create components
     cache = APICache(ttl_seconds=7200)
     ytdlp_client = YtDlpClient(cache)
-    invidious_api = InvidiousAPI(cache, ytdlp_client)
+    youtube_api = YouTubeAPI(cache, ytdlp_client)
     
-    # Test fallback scenario - try to get info for a channel
-    print("\n1. Testing channel info with fallback...")
+    # Test YouTube API functionality
+    print("\n1. Testing channel info...")
     test_channel_id = "UC-lHJZR3Gqxm24_Vd_AJ5Yw"  # PewDiePie
     try:
-        channel_info = invidious_api.get_channel(test_channel_id)
+        channel_info = youtube_api.get_channel(test_channel_id)
         if channel_info:
             print(f"✅ Channel info successful")
             print(f"   Channel: {channel_info.get('author', 'Unknown')}")
             print(f"   Subscribers: {channel_info.get('subCount', 'Unknown')}")
-            data_source = channel_info.get('data_source', 'invidious')
+            data_source = channel_info.get('data_source', 'yt-dlp')
             print(f"   Data source: {data_source}")
         else:
             print("❌ Channel info failed")
@@ -79,7 +79,7 @@ def test_invidious_ytdlp_fallback():
         print(f"❌ Channel info failed with error: {e}")
     
     print(f"\n📊 API call counts:")
-    print(f"   Invidious: {invidious_api.call_count}")
+    print(f"   YouTube API: {youtube_api.call_count}")
     print(f"   yt-dlp: {ytdlp_client.call_count}")
 
 def main():
@@ -89,7 +89,7 @@ def main():
     
     try:
         test_ytdlp_basic()
-        test_invidious_ytdlp_fallback()
+        test_youtube_ytdlp_integration()
         
         print("\n" + "=" * 60)
         print("✅ All tests completed! Check output above for results.")

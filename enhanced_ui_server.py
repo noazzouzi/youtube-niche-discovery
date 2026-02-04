@@ -317,60 +317,22 @@ class YtDlpClient:
         channel_url = f"https://www.youtube.com/channel/{channel_id}"
         return self.get_channel_info(channel_url, use_cache)
 
-class InvidiousAPI:
-    """Invidious API client with yt-dlp fallback, caching and instance failover"""
+class YouTubeAPI:
+    """YouTube API client using yt-dlp, with caching support"""
     
     def __init__(self, cache: APICache, ytdlp_client: Optional['YtDlpClient'] = None):
         self.cache = cache
         self.ytdlp_client = ytdlp_client
-        # Legacy Invidious API - no longer used
-        self.instances = []
-        self.current_instance = 0
         self.call_count = 0
-        logger.info(f"InvidiousAPI initialized with {len(self.instances)} instances and yt-dlp fallback")
+        logger.info(f"YouTubeAPI initialized with yt-dlp data source")
     
-    def _get_instance(self) -> str:
-        """Get current Invidious instance and rotate on failure"""
-        return self.instances[self.current_instance]
-    
-    def _rotate_instance(self):
-        """Rotate to next Invidious instance"""
-        self.current_instance = (self.current_instance + 1) % len(self.instances)
-        logger.info(f"Rotated to instance: {self._get_instance()}")
-    
-    def _make_request(self, endpoint: str, params: dict = None, retries: int = 3) -> Optional[dict]:
-        """Make API request with instance failover"""
-        for attempt in range(retries):
-            try:
-                instance = self._get_instance()
-                url = f"{instance}/api/v1{endpoint}"
-                
-                if params:
-                    url += "?" + urllib.parse.urlencode(params)
-                
-                logger.debug(f"Invidious request: {url}")
-                
-                with urllib.request.urlopen(url, timeout=15) as response:
-                    result = json.loads(response.read().decode())
-                
-                self.call_count += 1
-                logger.debug(f"Invidious API success: {instance}")
-                return result
-                
-            except Exception as e:
-                logger.warning(f"Invidious API error on {self._get_instance()}: {e}")
-                if attempt < retries - 1:
-                    self._rotate_instance()
-                    time.sleep(1)  # Brief delay before retry
-                else:
-                    logger.error(f"All Invidious instances failed for {endpoint}")
-                    return None
-        
-        return None
+    def _use_ytdlp_fallback(self) -> bool:
+        """Check if yt-dlp fallback should be used (always true now)"""
+        return self.ytdlp_client is not None
     
     def search(self, query: str, max_results: int = 30, search_type: str = 'all', use_cache: bool = True) -> Optional[dict]:
-        """Search Invidious with caching support"""
-        cache_key = self.cache._generate_key('invidious_search', {
+        """Search YouTube with caching support"""
+        cache_key = self.cache._generate_key('youtube_search', {
             'query': query,
             'max_results': max_results,
             'type': search_type
@@ -380,32 +342,40 @@ class InvidiousAPI:
         if use_cache:
             cached_result = self.cache.get(cache_key)
             if cached_result:
-                logger.debug(f"Using cached Invidious search for: {query}")
+                logger.debug(f"Using cached YouTube search for: {query}")
                 return cached_result
         
-        # Make API call
-        params = {
-            'q': query,
-            'type': search_type
-        }
-        
-        result = self._make_request('/search', params)
+        # Use yt-dlp for search
+        result = None
+        if self._use_ytdlp_fallback():
+            try:
+                if search_type == 'channel':
+                    # For channel search, use yt-dlp to search for channels
+                    ytdlp_result = self.ytdlp_client.search_channels(query, max_results)
+                else:
+                    # For video search, use yt-dlp
+                    ytdlp_result = self.ytdlp_client.search_videos(query, max_results)
+                
+                if ytdlp_result:
+                    result = self._convert_search_response(ytdlp_result, max_results)
+                    self.call_count += 1
+                    logger.debug(f"YouTube search via yt-dlp successful: {query}")
+                
+            except Exception as e:
+                logger.error(f"yt-dlp search failed for query '{query}': {e}")
+                return None
+        else:
+            logger.error("No yt-dlp client available for search")
+            return None
         
         if result and use_cache:
-            # Cache the result (2 hours TTL for search results)
-            temp_cache = APICache(ttl_seconds=7200)
-            temp_cache.cache = self.cache.cache  # Share storage
-            temp_cache.set(cache_key, result)
+            self.cache.set(cache_key, result)
         
-        # Convert Invidious response to YouTube API format for compatibility
-        if result:
-            return self._convert_search_response(result, max_results)
-        
-        return None
+        return result
     
     def get_channel(self, channel_id: str, use_cache: bool = True) -> Optional[dict]:
-        """Get channel information from Invidious with yt-dlp fallback"""
-        cache_key = self.cache._generate_key('invidious_channel', {'channel_id': channel_id})
+        """Get channel information using yt-dlp"""
+        cache_key = self.cache._generate_key('youtube_channel', {'channel_id': channel_id})
         
         # Try cache first
         if use_cache:
@@ -414,15 +384,24 @@ class InvidiousAPI:
                 logger.debug(f"Using cached channel data for: {channel_id}")
                 return cached_result
         
-        result = self._make_request(f'/channels/{channel_id}')
+        result = None
+        if self._use_ytdlp_fallback():
+            try:
+                ytdlp_result = self.ytdlp_client.get_channel_info(channel_id)
+                if ytdlp_result:
+                    result = self._convert_ytdlp_channel_to_youtube_format(ytdlp_result, channel_id)
+                    self.call_count += 1
+                    logger.debug(f"Channel info via yt-dlp successful: {channel_id}")
+            except Exception as e:
+                logger.error(f"yt-dlp channel lookup failed for {channel_id}: {e}")
         
         if result and use_cache:
             self.cache.set(cache_key, result)
         
         return result
     
-    def _convert_ytdlp_channel_to_invidious(self, ytdlp_data: dict, channel_id: str) -> dict:
-        """Convert yt-dlp channel data to Invidious-compatible format"""
+    def _convert_ytdlp_channel_to_youtube_format(self, ytdlp_data: dict, channel_id: str) -> dict:
+        """Convert yt-dlp channel data to YouTube API compatible format"""
         try:
             return {
                 'authorId': channel_id,
@@ -445,8 +424,8 @@ class InvidiousAPI:
             }
     
     def get_channel_videos(self, channel_id: str, use_cache: bool = True) -> Optional[dict]:
-        """Get channel videos from Invidious"""
-        cache_key = self.cache._generate_key('invidious_channel_videos', {'channel_id': channel_id})
+        """Get channel videos using yt-dlp"""
+        cache_key = self.cache._generate_key('youtube_channel_videos', {'channel_id': channel_id})
         
         # Try cache first
         if use_cache:
@@ -455,20 +434,29 @@ class InvidiousAPI:
                 logger.debug(f"Using cached channel videos for: {channel_id}")
                 return cached_result
         
-        result = self._make_request(f'/channels/{channel_id}/videos')
+        result = None
+        if self._use_ytdlp_fallback():
+            try:
+                ytdlp_result = self.ytdlp_client.get_channel_videos(channel_id)
+                if ytdlp_result:
+                    result = ytdlp_result
+                    self.call_count += 1
+                    logger.debug(f"Channel videos via yt-dlp successful: {channel_id}")
+            except Exception as e:
+                logger.error(f"yt-dlp channel videos failed for {channel_id}: {e}")
         
         if result and use_cache:
             self.cache.set(cache_key, result)
         
         return result
     
-    def _convert_search_response(self, invidious_result: list, max_results: int) -> dict:
-        """Convert Invidious search response to YouTube API format"""
-        if not isinstance(invidious_result, list):
+    def _convert_search_response(self, ytdlp_result: list, max_results: int) -> dict:
+        """Convert yt-dlp search response to YouTube API format"""
+        if not isinstance(ytdlp_result, list):
             return {'items': [], 'pageInfo': {'totalResults': 0}}
         
         items = []
-        for item in invidious_result[:max_results]:
+        for item in ytdlp_result[:max_results]:
             try:
                 if item.get('type') == 'video':
                     # Convert video item
@@ -1678,7 +1666,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             analysis_time = time.time() - start_time
             result['performance'] = {
                 'analysis_time_seconds': round(analysis_time, 2),
-                'invidious_api_calls': invidious_api.call_count,
+                'ytdlp_api_calls': ytdlp_data_source.call_count,
                 'trends_api_calls': trends_api.call_count,
                 'cache_stats': cache.get_stats()
             }
@@ -1705,7 +1693,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             discovery_time = time.time() - start_time
             result['performance'] = {
                 'discovery_time_seconds': round(discovery_time, 2),
-                'invidious_api_calls': invidious_api.call_count,
+                'ytdlp_api_calls': ytdlp_data_source.call_count,
                 'cache_stats': cache.get_stats()
             }
             
