@@ -30,9 +30,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Import the new YtDlpDataSource (must be in same directory)
+# Import the new YtDlpDataSource and ContentTypeAnalyzer (must be in same directory)
 try:
-    from ytdlp_data_source import YtDlpDataSource
+    from ytdlp_data_source import YtDlpDataSource, ContentTypeAnalyzer
 except ImportError:
     logger.error("YtDlpDataSource not found! Make sure ytdlp_data_source.py is in the same directory.")
     sys.exit(1)
@@ -607,6 +607,198 @@ class TrendsAPI:
         
         return random.randint(40, 60)
 
+class CompetitorAnalyzer:
+    """Analyze market saturation and competitor landscape in a niche"""
+    
+    def __init__(self, ytdlp_data_source: 'YtDlpDataSource', cache: APICache):
+        self.ytdlp_data_source = ytdlp_data_source
+        self.cache = cache
+        logger.info("CompetitorAnalyzer initialized")
+    
+    def analyze_competitors(self, niche: str, max_results: int = 30) -> dict:
+        """Analyze competitor landscape for a given niche"""
+        logger.info(f"Analyzing competitors for niche: {niche}")
+        start_time = time.time()
+        
+        try:
+            # Search for videos in this niche to identify channels
+            videos = self.ytdlp_data_source.search(niche, max_results, search_type='video')
+            if not videos or not videos.get('items'):
+                return self._empty_competitor_response(niche, "No video search results found")
+            
+            # Aggregate channel data from video results
+            channels = {}
+            for video in videos['items']:
+                # Extract channel info from video snippet
+                snippet = video.get('snippet', {})
+                channel_id = snippet.get('channelId')
+                channel_name = snippet.get('channelTitle')
+                
+                if not channel_id or not channel_name:
+                    continue
+                
+                if channel_id not in channels:
+                    channels[channel_id] = {
+                        'name': channel_name,
+                        'id': channel_id,
+                        'video_count': 0,
+                        'total_views': 0,
+                        'videos': []
+                    }
+                
+                # Add video data
+                statistics = video.get('statistics', {})
+                view_count = int(statistics.get('viewCount', 0) or 0)
+                channels[channel_id]['video_count'] += 1
+                channels[channel_id]['total_views'] += view_count
+                channels[channel_id]['videos'].append({
+                    'title': snippet.get('title', ''),
+                    'views': view_count,
+                    'upload_date': snippet.get('publishedAt', '')
+                })
+            
+            # Get detailed channel info for only the top channels (limit API calls)
+            sorted_channels = sorted(
+                channels.values(), 
+                key=lambda x: x['total_views'], 
+                reverse=True
+            )
+            
+            competitor_channels = []
+            total_unique_channels = len(channels)
+            
+            # For initial demonstration, get detailed info for just top 3 channels
+            # This minimizes API calls as requested in the task
+            for channel_data in sorted_channels[:3]:
+                try:
+                    channel_info = self.ytdlp_data_source.get_channel(channel_data['id'])
+                    if channel_info:
+                        statistics = channel_info.get('statistics', {})
+                        subscriber_count = int(statistics.get('subscriberCount', 0) or 0)
+                    else:
+                        # Fallback: estimate based on view patterns
+                        subscriber_count = self._estimate_subscribers_from_views(channel_data['total_views'], channel_data['video_count'])
+                except Exception as e:
+                    logger.warning(f"Could not get channel info for {channel_data['id']}: {e}")
+                    # Use estimated subscriber count
+                    subscriber_count = self._estimate_subscribers_from_views(channel_data['total_views'], channel_data['video_count'])
+                
+                avg_views = channel_data['total_views'] / max(channel_data['video_count'], 1)
+                
+                competitor_channels.append({
+                    'name': channel_data['name'],
+                    'id': channel_data['id'],
+                    'subscribers': subscriber_count,
+                    'video_count': channel_data['video_count'],
+                    'avg_views': round(avg_views),
+                    'total_views': channel_data['total_views'],
+                    'subscriber_tier': self._get_subscriber_tier(subscriber_count)
+                })
+            
+            # Calculate market saturation based on all unique channels found
+            analysis = self._calculate_market_saturation(competitor_channels, total_unique_channels)
+            
+            # Get top competitors
+            top_competitors = sorted(
+                competitor_channels, 
+                key=lambda x: x['subscribers'], 
+                reverse=True
+            )[:5]
+            
+            analysis_time = time.time() - start_time
+            
+            return {
+                'niche': niche,
+                'saturation_level': analysis['saturation_level'],
+                'saturation_score': analysis['saturation_score'],
+                'channel_count': total_unique_channels,
+                'tier_breakdown': analysis['tier_breakdown'],
+                'top_competitors': top_competitors,
+                'performance': {
+                    'analysis_time_seconds': round(analysis_time, 2),
+                    'total_channels_analyzed': len(competitor_channels),
+                    'ytdlp_calls': self.ytdlp_data_source.call_count
+                },
+                'success': True
+            }
+            
+        except Exception as e:
+            logger.error(f"Competitor analysis error for {niche}: {e}")
+            return self._empty_competitor_response(niche, f"Error: {str(e)}")
+    
+    def _estimate_subscribers_from_views(self, total_views: int, video_count: int) -> int:
+        """Estimate subscriber count based on video performance"""
+        if video_count == 0:
+            return 0
+            
+        avg_views = total_views / video_count
+        
+        # Rough estimation based on typical view-to-subscriber ratios
+        # These are conservative estimates for demonstration
+        if avg_views > 500000:
+            return int(avg_views * 0.05)  # Large channels: ~5% of views = subscribers
+        elif avg_views > 50000:
+            return int(avg_views * 0.08)  # Medium channels: ~8% of views = subscribers
+        elif avg_views > 5000:
+            return int(avg_views * 0.12)  # Small channels: ~12% of views = subscribers
+        else:
+            return int(avg_views * 0.15)  # Micro channels: ~15% of views = subscribers
+    
+    def _get_subscriber_tier(self, subscriber_count: int) -> str:
+        """Categorize channel by subscriber count"""
+        if subscriber_count >= 100000:
+            return 'large'
+        elif subscriber_count >= 10000:
+            return 'medium'
+        elif subscriber_count >= 1000:
+            return 'small'
+        else:
+            return 'micro'
+    
+    def _calculate_market_saturation(self, channels: list, total_unique_channels: int = None) -> dict:
+        """Calculate market saturation metrics"""
+        total_channels = total_unique_channels if total_unique_channels is not None else len(channels)
+        
+        # Count channels by tier
+        tier_breakdown = {
+            'micro': 0,    # 0-1K subscribers
+            'small': 0,    # 1K-10K
+            'medium': 0,   # 10K-100K  
+            'large': 0     # 100K+
+        }
+        
+        for channel in channels:
+            tier = channel['subscriber_tier']
+            tier_breakdown[tier] += 1
+        
+        # Calculate saturation level
+        if total_channels < 10:
+            saturation_level = 'low'
+        elif total_channels < 50:
+            saturation_level = 'medium'
+        else:
+            saturation_level = 'high'
+        
+        return {
+            'saturation_level': saturation_level,
+            'saturation_score': total_channels,
+            'tier_breakdown': tier_breakdown
+        }
+    
+    def _empty_competitor_response(self, niche: str, reason: str) -> dict:
+        """Return empty competitor analysis response"""
+        return {
+            'niche': niche,
+            'saturation_level': 'unknown',
+            'saturation_score': 0,
+            'channel_count': 0,
+            'tier_breakdown': {'micro': 0, 'small': 0, 'medium': 0, 'large': 0},
+            'top_competitors': [],
+            'error_reason': reason,
+            'success': False
+        }
+
+
 class ChannelDiscovery:
     """Discover and score Rising Star channels in a niche"""
     
@@ -693,6 +885,38 @@ class ChannelDiscovery:
                     # Set fallback values
                     channel_data['subscribers'] = 0
                     channel_data['total_views'] = 0
+            
+            # Step 3.5: Analyze content types for faceless content detection
+            content_type_analyzer = ContentTypeAnalyzer()
+            for ch_id, ch_data in channels.items():
+                try:
+                    # Prepare channel data for content type analysis
+                    analysis_data = {
+                        'snippet': {
+                            'title': ch_data.get('name', ''),
+                            'description': ''  # We don't have channel description in this context
+                        },
+                        'videos': ch_data.get('videos', [])
+                    }
+                    
+                    # Analyze content type
+                    content_analysis = content_type_analyzer.analyze_channel(analysis_data)
+                    ch_data.update({
+                        'content_type': content_analysis['content_type'],
+                        'faceless_score': content_analysis['faceless_score'],
+                        'copy_indicators': content_analysis['copy_indicators']
+                    })
+                    
+                    logger.debug(f"Content analysis for {ch_data['name']}: {content_analysis['content_type']} (score: {content_analysis['faceless_score']})")
+                
+                except Exception as e:
+                    logger.warning(f"Error analyzing content type for channel {ch_id}: {e}")
+                    # Set fallback values
+                    ch_data.update({
+                        'content_type': 'unknown',
+                        'faceless_score': 0,
+                        'copy_indicators': []
+                    })
             
             # Step 4: Calculate rising star scores  
             rising_stars = []
@@ -1353,12 +1577,14 @@ _trends_api = None
 _niche_scorer = None
 _recommendation_engine = None
 _channel_discovery = None
+_competitor_analyzer = None
+_content_type_analyzer = None
 _request_count = 0
 _start_time = time.time()
 
 def get_shared_components():
     """Get shared component instances"""
-    global _cache, _ytdlp_data_source, _trends_api, _niche_scorer, _recommendation_engine, _channel_discovery
+    global _cache, _ytdlp_data_source, _trends_api, _niche_scorer, _recommendation_engine, _channel_discovery, _competitor_analyzer, _content_type_analyzer
     
     if _cache is None:
         logger.info("Initializing shared components...")
@@ -1368,9 +1594,11 @@ def get_shared_components():
         _niche_scorer = NicheScorer(_ytdlp_data_source, _trends_api)
         _recommendation_engine = RecommendationEngine(_niche_scorer)
         _channel_discovery = ChannelDiscovery(_ytdlp_data_source, _cache)
+        _competitor_analyzer = CompetitorAnalyzer(_ytdlp_data_source, _cache)
+        _content_type_analyzer = ContentTypeAnalyzer()
         logger.info("Shared components initialized")
     
-    return _cache, _ytdlp_client, _ytdlp_data_source, _trends_api, _niche_scorer, _recommendation_engine, _channel_discovery
+    return _cache, _ytdlp_data_source, _trends_api, _niche_scorer, _recommendation_engine, _channel_discovery, _competitor_analyzer, _content_type_analyzer
 
 class RequestHandler(BaseHTTPRequestHandler):
     """HTTP request handler with shared components"""
@@ -1405,6 +1633,14 @@ class RequestHandler(BaseHTTPRequestHandler):
                 else:
                     result = self.discover_channels(niche)
                     self.send_json(result)
+            elif parsed.path == '/api/competitors':
+                params = parse_qs(parsed.query)
+                niche = params.get('niche', [''])[0]
+                if not niche:
+                    self.send_json({'error': 'Please provide a niche parameter'})
+                else:
+                    result = self.analyze_competitors(niche)
+                    self.send_json(result)
             elif parsed.path == '/api/stats':
                 self.send_json(self.get_stats())
             elif parsed.path == '/api/status':
@@ -1421,7 +1657,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         logger.info(f"Analyzing niche: {niche_name}")
         
         try:
-            cache, ytdlp_client, invidious_api, trends_api, niche_scorer, recommendation_engine, channel_discovery = get_shared_components()
+            cache, ytdlp_data_source, trends_api, niche_scorer, recommendation_engine, channel_discovery, competitor_analyzer, content_type_analyzer = get_shared_components()
             
             # Get full score for the main niche
             result = niche_scorer.full_score(niche_name)
@@ -1460,7 +1696,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         logger.info(f"Discovering channels for: {niche}")
         
         try:
-            cache, ytdlp_client, invidious_api, trends_api, niche_scorer, recommendation_engine, channel_discovery = get_shared_components()
+            cache, ytdlp_data_source, trends_api, niche_scorer, recommendation_engine, channel_discovery, competitor_analyzer, content_type_analyzer = get_shared_components()
             
             # Get channel discovery results
             result = channel_discovery.find_rising_star_channels(niche)
@@ -1490,6 +1726,41 @@ class RequestHandler(BaseHTTPRequestHandler):
                 'success': False
             }
     
+    def analyze_competitors(self, niche: str) -> dict:
+        """Analyze competitor landscape for a niche"""
+        start_time = time.time()
+        logger.info(f"Analyzing competitors for: {niche}")
+        
+        try:
+            cache, ytdlp_data_source, trends_api, niche_scorer, recommendation_engine, channel_discovery, competitor_analyzer, content_type_analyzer = get_shared_components()
+            
+            # Get competitor analysis results
+            result = competitor_analyzer.analyze_competitors(niche)
+            
+            # Add API performance stats
+            analysis_time = time.time() - start_time
+            if result.get('performance'):
+                result['performance'].update({
+                    'api_analysis_time_seconds': round(analysis_time, 2),
+                    'cache_stats': cache.get_stats()
+                })
+            
+            logger.info(f"Competitor analysis completed in {analysis_time:.2f}s")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Competitor analysis error for {niche}: {e}")
+            return {
+                'niche': niche,
+                'saturation_level': 'unknown',
+                'saturation_score': 0,
+                'channel_count': 0,
+                'tier_breakdown': {'micro': 0, 'small': 0, 'medium': 0, 'large': 0},
+                'top_competitors': [],
+                'error_reason': f'Error: {str(e)}',
+                'success': False
+            }
+    
     def get_suggestions(self) -> dict:
         """Get random niche suggestions"""
         suggestions = []
@@ -1507,7 +1778,7 @@ class RequestHandler(BaseHTTPRequestHandler):
     
     def get_stats(self) -> dict:
         """Get comprehensive API statistics"""
-        cache, ytdlp_client, ytdlp_data_source, trends_api, _, _, _ = get_shared_components()
+        cache, ytdlp_data_source, trends_api, _, _, _, _, _ = get_shared_components()
         uptime = time.time() - _start_time
         return {
             'uptime_seconds': round(uptime, 1),
@@ -2008,6 +2279,107 @@ class RequestHandler(BaseHTTPRequestHandler):
             font-size: 0.9em;
         }}
         
+        .content-type-badge {{
+            padding: 4px 10px;
+            border-radius: 15px;
+            font-size: 0.8em;
+            font-weight: 500;
+            margin: 4px 0;
+            display: inline-block;
+        }}
+        
+        .content-type-faceless_voiceover {{
+            background: #dcfce7;
+            color: #16a34a;
+            border: 1px solid #86efac;
+        }}
+        
+        .content-type-compilation {{
+            background: #dbeafe;
+            color: #2563eb;
+            border: 1px solid #93c5fd;
+        }}
+        
+        .content-type-screen_recording {{
+            background: #fef3c7;
+            color: #d97706;
+            border: 1px solid #fcd34d;
+        }}
+        
+        .content-type-tutorial {{
+            background: #f3e8ff;
+            color: #9333ea;
+            border: 1px solid #c4b5fd;
+        }}
+        
+        .content-type-unknown {{
+            background: #f1f5f9;
+            color: #64748b;
+            border: 1px solid #cbd5e1;
+        }}
+        
+        .content-type-possibly_faceless {{
+            background: #fef3c7;
+            color: #f59e0b;
+            border: 1px solid #fbbf24;
+        }}
+        
+        .faceless-score {{
+            font-size: 0.75em;
+            opacity: 0.8;
+            margin-left: 5px;
+        }}
+        
+        .channel-badges {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+            margin-top: 8px;
+        }}
+        
+        .filter-section {{
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f8fafc;
+            border-radius: 10px;
+            border: 1px solid #e2e8f0;
+        }}
+        
+        .filter-controls {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            align-items: center;
+        }}
+        
+        .filter-checkbox {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            padding: 8px 12px;
+            background: white;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }}
+        
+        .filter-checkbox:hover {{
+            border-color: #f59e0b;
+            background: #fffbeb;
+        }}
+        
+        .filter-checkbox input[type="checkbox"] {{
+            margin: 0;
+            cursor: pointer;
+        }}
+        
+        .filter-label {{
+            font-weight: 500;
+            color: #374151;
+        }}
+        
         .channel-stats {{
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
@@ -2107,6 +2479,163 @@ class RequestHandler(BaseHTTPRequestHandler):
                 flex-direction: column;
                 align-items: flex-start;
             }}
+        }}
+        
+        /* Competitor Analysis Styles */
+        .competitor-analysis {{
+            margin-top: 16px;
+        }}
+        
+        .saturation-meter {{
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 16px;
+            border: 1px solid #e5e7eb;
+        }}
+        
+        .saturation-header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+        }}
+        
+        .saturation-level {{
+            font-weight: 600;
+            font-size: 1.1em;
+        }}
+        
+        .saturation-score {{
+            color: #6b7280;
+            font-size: 0.9em;
+        }}
+        
+        .tier-breakdown h4 {{
+            margin-bottom: 12px;
+            color: #374151;
+        }}
+        
+        .tier-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 12px;
+        }}
+        
+        .tier-item {{
+            text-align: center;
+            padding: 12px;
+            background: #f9fafb;
+            border-radius: 8px;
+            border: 1px solid #e5e7eb;
+        }}
+        
+        .tier-label {{
+            font-size: 0.85em;
+            color: #6b7280;
+            margin-bottom: 4px;
+        }}
+        
+        .tier-count {{
+            font-size: 1.4em;
+            font-weight: 700;
+            color: #374151;
+        }}
+        
+        .top-competitors {{
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #e5e7eb;
+        }}
+        
+        .top-competitors h4 {{
+            margin-bottom: 16px;
+            color: #374151;
+        }}
+        
+        .competitors-list {{
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }}
+        
+        .competitor-item {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px;
+            background: #f9fafb;
+            border-radius: 8px;
+            border: 1px solid #e5e7eb;
+            transition: all 0.2s;
+        }}
+        
+        .competitor-item:hover {{
+            background: #f3f4f6;
+            transform: translateX(2px);
+        }}
+        
+        .competitor-info {{
+            flex: 1;
+        }}
+        
+        .competitor-name {{
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 2px;
+        }}
+        
+        .competitor-stats {{
+            font-size: 0.85em;
+            color: #6b7280;
+        }}
+        
+        .competitor-tier {{
+            padding: 4px 8px;
+            border-radius: 20px;
+            font-size: 0.75em;
+            font-weight: 600;
+            text-transform: uppercase;
+        }}
+        
+        .tier-micro {{
+            background: #e5e7eb;
+            color: #6b7280;
+        }}
+        
+        .tier-small {{
+            background: #ddd6fe;
+            color: #7c3aed;
+        }}
+        
+        .tier-medium {{
+            background: #fde68a;
+            color: #d97706;
+        }}
+        
+        .tier-large {{
+            background: #dcfce7;
+            color: #16a34a;
+        }}
+        
+        .section-header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+        }}
+        
+        .section-header h3 {{
+            margin: 0;
+            color: #374151;
+        }}
+        
+        .analysis-section {{
+            margin-top: 24px;
+            padding: 24px;
+            background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+            border-radius: 16px;
         }}
     </style>
 </head>
@@ -2251,6 +2780,18 @@ class RequestHandler(BaseHTTPRequestHandler):
                     
                     ${{renderRisingStarChannels(data.rising_star_channels)}}
                     
+                    <div id="competitorAnalysis" class="analysis-section">
+                        <div class="section-header">
+                            <h3>🎯 Competitor Analysis</h3>
+                            <button class="btn-secondary" onclick="loadCompetitorAnalysis('${{niche}}')">
+                                Analyze Competition
+                            </button>
+                        </div>
+                        <div id="competitorContent">
+                            <p style="color: #666; font-style: italic;">Click "Analyze Competition" to see market saturation and top competitors</p>
+                        </div>
+                    </div>
+                    
                     ${{renderRecommendations(data.recommendations, data.total_score)}}
                 `;
             }} catch (err) {{
@@ -2292,15 +2833,42 @@ class RequestHandler(BaseHTTPRequestHandler):
                         <div class="rising-stars-title">🌟 Rising Star Channels</div>
                         <div class="rising-stars-subtitle">Growing channels in this niche worth checking out</div>
                     </div>
-                    <div class="channel-grid">
+                    <div class="filter-section">
+                        <div class="filter-label">🔍 Filter Channels:</div>
+                        <div class="filter-controls">
+                            <label class="filter-checkbox">
+                                <input type="checkbox" id="facelessFilter" onchange="filterChannels()">
+                                <span>🎭 Faceless Only (50%+)</span>
+                            </label>
+                            <label class="filter-checkbox">
+                                <input type="checkbox" id="compilationFilter" onchange="filterChannels()">
+                                <span>📋 Compilations</span>
+                            </label>
+                            <label class="filter-checkbox">
+                                <input type="checkbox" id="voiceoverFilter" onchange="filterChannels()">
+                                <span>🗣️ Voice-over</span>
+                            </label>
+                            <label class="filter-checkbox">
+                                <input type="checkbox" id="screenRecordingFilter" onchange="filterChannels()">
+                                <span>🖥️ Screen Recording</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="channel-grid" id="channelGrid">
                         ${{channels.map(channel => `
-                            <div class="channel-card" onclick="window.open('${{channel.url}}', '_blank')">
+                            <div class="channel-card" onclick="window.open('${{channel.url}}', '_blank')" data-content-type="${{channel.content_type || 'unknown'}}" data-faceless-score="${{channel.faceless_score || 0}}">
                                 <div class="channel-header">
                                     <a href="${{channel.url}}" target="_blank" class="channel-name" onclick="event.stopPropagation()">
                                         ${{channel.name}}
                                     </a>
                                     <div class="rising-star-score">
                                         ⭐ ${{Math.round(channel.rising_star_score)}}
+                                    </div>
+                                </div>
+                                <div class="channel-badges">
+                                    <div class="content-type-badge content-type-${{channel.content_type || 'unknown'}}">
+                                        ${{getContentTypeLabel(channel.content_type)}}
+                                        ${{channel.faceless_score >= 50 ? `<span class="faceless-score">(${{channel.faceless_score}}%)</span>` : ''}}
                                     </div>
                                 </div>
                                 <div class="channel-stats">
@@ -2328,6 +2896,61 @@ class RequestHandler(BaseHTTPRequestHandler):
             if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
             if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
             return num.toLocaleString();
+        }}
+        
+        function getContentTypeLabel(contentType) {{
+            const labels = {{
+                'faceless_voiceover': '🎭 Faceless',
+                'compilation': '📋 Compilation', 
+                'screen_recording': '🖥️ Screen Rec',
+                'tutorial': '📚 Tutorial',
+                'possibly_faceless': '🤔 Maybe Faceless',
+                'unknown': '❓ Unknown'
+            }};
+            return labels[contentType] || '❓ Unknown';
+        }}
+        
+        function filterChannels() {{
+            const facelessFilter = document.getElementById('facelessFilter').checked;
+            const compilationFilter = document.getElementById('compilationFilter').checked;
+            const voiceoverFilter = document.getElementById('voiceoverFilter').checked;
+            const screenRecordingFilter = document.getElementById('screenRecordingFilter').checked;
+            
+            const channelCards = document.querySelectorAll('.channel-card');
+            
+            channelCards.forEach(card => {{
+                const contentType = card.dataset.contentType;
+                const facelessScore = parseInt(card.dataset.facelessScore) || 0;
+                
+                let show = true;
+                
+                // If any filter is active, start with hide
+                if (facelessFilter || compilationFilter || voiceoverFilter || screenRecordingFilter) {{
+                    show = false;
+                    
+                    // Check faceless filter
+                    if (facelessFilter && facelessScore >= 50) {{
+                        show = true;
+                    }}
+                    
+                    // Check compilation filter
+                    if (compilationFilter && contentType === 'compilation') {{
+                        show = true;
+                    }}
+                    
+                    // Check voiceover filter
+                    if (voiceoverFilter && contentType === 'faceless_voiceover') {{
+                        show = true;
+                    }}
+                    
+                    // Check screen recording filter
+                    if (screenRecordingFilter && contentType === 'screen_recording') {{
+                        show = true;
+                    }}
+                }}
+                
+                card.style.display = show ? 'block' : 'none';
+            }});
         }}
         
         function renderRecommendations(recommendations, originalScore) {{
@@ -2358,6 +2981,120 @@ class RequestHandler(BaseHTTPRequestHandler):
                             </div>
                         `).join('')}}
                     </div>
+                </div>
+            `;
+        }}
+        
+        async function loadCompetitorAnalysis(niche) {{
+            const content = document.getElementById('competitorContent');
+            const btn = event.target;
+            
+            btn.disabled = true;
+            btn.innerHTML = '⏳ Loading...';
+            
+            content.innerHTML = `
+                <div class="loading">
+                    <div class="loading-spinner"></div>
+                    <p>Analyzing competitors for <strong>"${{niche}}"</strong></p>
+                </div>
+            `;
+            
+            try {{
+                const res = await fetch('/api/competitors?niche=' + encodeURIComponent(niche));
+                const data = await res.json();
+                
+                if (data.error) {{
+                    content.innerHTML = `
+                        <div class="error">
+                            <div class="error-title">⚠️ Analysis Failed</div>
+                            <p>${{data.error}}</p>
+                        </div>
+                    `;
+                    return;
+                }}
+                
+                content.innerHTML = renderCompetitorAnalysis(data);
+                
+            }} catch (err) {{
+                content.innerHTML = `
+                    <div class="error">
+                        <div class="error-title">⚠️ Something went wrong</div>
+                        <p>Unable to load competitor analysis. Please try again.</p>
+                    </div>
+                `;
+            }}
+            
+            btn.disabled = false;
+            btn.innerHTML = 'Refresh Analysis';
+        }}
+        
+        function renderCompetitorAnalysis(data) {{
+            if (!data || !data.success) {{
+                return `
+                    <div class="error">
+                        <p>${{data.error_reason || 'No competitor data available'}}</p>
+                    </div>
+                `;
+            }}
+            
+            const saturationColor = data.saturation_level === 'low' ? '#16a34a' : 
+                                    data.saturation_level === 'medium' ? '#d97706' : '#dc2626';
+            const saturationIcon = data.saturation_level === 'low' ? '🟢' : 
+                                   data.saturation_level === 'medium' ? '🟡' : '🔴';
+            
+            return `
+                <div class="competitor-analysis">
+                    <div class="saturation-meter">
+                        <div class="saturation-header">
+                            <div class="saturation-level" style="color: ${{saturationColor}}">
+                                ${{saturationIcon}} ${{data.saturation_level.toUpperCase()}} Saturation
+                            </div>
+                            <div class="saturation-score">${{data.channel_count}} active channels</div>
+                        </div>
+                        
+                        <div class="tier-breakdown">
+                            <h4>Channel Distribution by Size</h4>
+                            <div class="tier-grid">
+                                <div class="tier-item">
+                                    <div class="tier-label">Large (100K+)</div>
+                                    <div class="tier-count">${{data.tier_breakdown.large}}</div>
+                                </div>
+                                <div class="tier-item">
+                                    <div class="tier-label">Medium (10K-100K)</div>
+                                    <div class="tier-count">${{data.tier_breakdown.medium}}</div>
+                                </div>
+                                <div class="tier-item">
+                                    <div class="tier-label">Small (1K-10K)</div>
+                                    <div class="tier-count">${{data.tier_breakdown.small}}</div>
+                                </div>
+                                <div class="tier-item">
+                                    <div class="tier-label">Micro (<1K)</div>
+                                    <div class="tier-count">${{data.tier_breakdown.micro}}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    ${{data.top_competitors.length > 0 ? `
+                        <div class="top-competitors">
+                            <h4>🏆 Top Competitors to Study</h4>
+                            <div class="competitors-list">
+                                ${{data.top_competitors.map(channel => `
+                                    <div class="competitor-item">
+                                        <div class="competitor-info">
+                                            <div class="competitor-name">${{channel.name}}</div>
+                                            <div class="competitor-stats">
+                                                ${{formatNumber(channel.subscribers)}} subscribers • ${{formatNumber(channel.avg_views)}} avg views
+                                            </div>
+                                        </div>
+                                        <div class="competitor-tier tier-${{channel.subscriber_tier}}">
+                                            ${{channel.subscriber_tier}}
+                                        </div>
+                                    </div>
+                                `).join('')}}
+                            </div>
+                        </div>
+                    ` : ''}}
                 </div>
             `;
         }}
