@@ -892,7 +892,9 @@ class ChannelDiscovery:
                     ch_data.update({
                         'content_type': content_analysis['content_type'],
                         'faceless_score': content_analysis['faceless_score'],
-                        'copy_indicators': content_analysis['copy_indicators']
+                        'copy_indicators': content_analysis['copy_indicators'],
+                        'avg_duration_minutes': content_analysis.get('avg_duration_minutes', 0),
+                        'has_long_videos': content_analysis.get('has_long_videos', False)
                     })
                     
                     logger.debug(f"Content analysis for {ch_data['name']}: {content_analysis['content_type']} (score: {content_analysis['faceless_score']})")
@@ -903,7 +905,9 @@ class ChannelDiscovery:
                     ch_data.update({
                         'content_type': 'unknown',
                         'faceless_score': 0,
-                        'copy_indicators': []
+                        'copy_indicators': [],
+                        'avg_duration_minutes': 0,
+                        'has_long_videos': False
                     })
             
             # Step 4: Calculate rising star scores  
@@ -2318,6 +2322,24 @@ class RequestHandler(BaseHTTPRequestHandler):
             margin-left: 5px;
         }}
         
+        .duration-badge {{
+            padding: 4px 10px;
+            border-radius: 15px;
+            font-size: 0.8em;
+            font-weight: 500;
+            margin: 4px 0;
+            display: inline-block;
+            background: #e0e7ff;
+            color: #3730a3;
+            border: 1px solid #a5b4fc;
+        }}
+        
+        .duration-badge.long-duration {{
+            background: #fef3c7;
+            color: #d97706;
+            border: 1px solid #fcd34d;
+        }}
+        
         .channel-badges {{
             display: flex;
             flex-wrap: wrap;
@@ -2840,11 +2862,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                                 <input type="checkbox" id="screenRecordingFilter" onchange="filterChannels()">
                                 <span>🖥️ Screen Recording</span>
                             </label>
+                            <label class="filter-checkbox">
+                                <input type="checkbox" id="longVideoFilter" onchange="filterChannels()">
+                                <span>⏱️ Long Videos (20+ min)</span>
+                            </label>
                         </div>
                     </div>
                     <div class="channel-grid" id="channelGrid">
                         ${{channels.map(channel => `
-                            <div class="channel-card" onclick="window.open('${{channel.url}}', '_blank')" data-content-type="${{channel.content_type || 'unknown'}}" data-faceless-score="${{channel.faceless_score || 0}}">
+                            <div class="channel-card" onclick="window.open('${{channel.url}}', '_blank')" data-content-type="${{channel.content_type || 'unknown'}}" data-faceless-score="${{channel.faceless_score || 0}}" data-has-long-videos="${{channel.has_long_videos || false}}" data-avg-duration="${{channel.avg_duration_minutes || 0}}">
                                 <div class="channel-header">
                                     <a href="${{channel.url}}" target="_blank" class="channel-name" onclick="event.stopPropagation()">
                                         ${{channel.name}}
@@ -2858,6 +2884,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                                         ${{getContentTypeLabel(channel.content_type)}}
                                         ${{channel.faceless_score >= 50 ? `<span class="faceless-score">(${{channel.faceless_score}}%)</span>` : ''}}
                                     </div>
+                                    ${{channel.avg_duration_minutes && channel.avg_duration_minutes > 0 ? `
+                                        <div class="duration-badge ${{channel.has_long_videos ? 'long-duration' : ''}}">
+                                            ⏱️ Avg: ${{Math.round(channel.avg_duration_minutes)}}m
+                                        </div>
+                                    ` : ''}}
                                 </div>
                                 <div class="channel-stats">
                                     <div class="channel-stat">
@@ -2903,17 +2934,19 @@ class RequestHandler(BaseHTTPRequestHandler):
             const compilationFilter = document.getElementById('compilationFilter').checked;
             const voiceoverFilter = document.getElementById('voiceoverFilter').checked;
             const screenRecordingFilter = document.getElementById('screenRecordingFilter').checked;
+            const longVideoFilter = document.getElementById('longVideoFilter').checked;
             
             const channelCards = document.querySelectorAll('.channel-card');
             
             channelCards.forEach(card => {{
                 const contentType = card.dataset.contentType;
                 const facelessScore = parseInt(card.dataset.facelessScore) || 0;
+                const hasLongVideos = card.dataset.hasLongVideos === 'true';
                 
                 let show = true;
                 
                 // If any filter is active, start with hide
-                if (facelessFilter || compilationFilter || voiceoverFilter || screenRecordingFilter) {{
+                if (facelessFilter || compilationFilter || voiceoverFilter || screenRecordingFilter || longVideoFilter) {{
                     show = false;
                     
                     // Check faceless filter
@@ -2933,6 +2966,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                     
                     // Check screen recording filter
                     if (screenRecordingFilter && contentType === 'screen_recording') {{
+                        show = true;
+                    }}
+                    
+                    // Check long video filter
+                    if (longVideoFilter && hasLongVideos) {{
                         show = true;
                     }}
                 }}

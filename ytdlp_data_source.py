@@ -525,11 +525,17 @@ class ContentTypeAnalyzer:
             # Determine content type based on indicators
             content_type = self._determine_content_type(copy_indicators, total_score)
             
+            # Extract duration information
+            avg_duration_minutes = duration_pattern.get('avg_duration_minutes', 0)
+            has_long_videos = avg_duration_minutes >= 20
+
             return {
                 'faceless_score': min(100, max(0, int(total_score))),
                 'content_type': content_type,
                 'copy_indicators': list(set(copy_indicators)),  # Remove duplicates
-                'analysis_details': details
+                'analysis_details': details,
+                'avg_duration_minutes': round(avg_duration_minutes, 1),
+                'has_long_videos': has_long_videos
             }
             
         except Exception as e:
