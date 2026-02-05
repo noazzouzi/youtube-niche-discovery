@@ -1,5 +1,2 @@
-# No dependencies required for simulation mode
-# The production_server.py uses only Python standard library
-
-# For live API integration, use:
-# pip install -r requirements-live-api.txt
+aiohttp>=3.9.0
+pytrends>=4.9.0
