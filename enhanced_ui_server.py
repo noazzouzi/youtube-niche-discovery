@@ -23,6 +23,13 @@ from pytrends.request import TrendReq
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import quote
 
+# Import the CPM Estimator
+try:
+    from app.cpm_estimator import CPMEstimator
+    HAS_CPM_ESTIMATOR = True
+except ImportError:
+    HAS_CPM_ESTIMATOR = False
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -1184,24 +1191,25 @@ class NicheScorer:
         self.ytdlp_data_source = ytdlp_data_source
         self.trends_api = trends_api
         
-        # CPM data with sources
-        self.cpm_rates = {
-            'ai': {'rate': 8.0, 'source': 'PM Research: Tech + AI premium'},
-            'artificial intelligence': {'rate': 8.5, 'source': 'PM Research: AI/Tech premium'},
-            'crypto': {'rate': 10.0, 'source': 'PM Research: Finance tier'},
-            'bitcoin': {'rate': 11.0, 'source': 'PM Research: Crypto premium'},
-            'finance': {'rate': 12.0, 'source': 'PM Research: Tier 1 Premium'},
-            'investing': {'rate': 11.0, 'source': 'PM Research: Finance/Investing'},
-            'business': {'rate': 8.0, 'source': 'PM Research: Business premium'},
-            'tech': {'rate': 4.15, 'source': 'PM Research: Tech baseline $4.15'},
-            'tutorial': {'rate': 5.5, 'source': 'PM Research: Educational premium'},
-            'japanese': {'rate': 2.8, 'source': 'PM Research: Entertainment/International'},
-            'gaming': {'rate': 2.5, 'source': 'PM Research: Gaming content'},
-            'fitness': {'rate': 3.5, 'source': 'PM Research: Health & Fitness'},
-            'education': {'rate': 4.9, 'source': 'PM Research: Education $4.90'},
-            'lifestyle': {'rate': 3.0, 'source': 'PM Research: Lifestyle content'}
-        }
-        logger.info("NicheScorer initialized")
+        # Initialize new CPM Estimator if available
+        if HAS_CPM_ESTIMATOR:
+            self.cpm_estimator = CPMEstimator()
+            logger.info("NicheScorer initialized with advanced CPM Estimator (69 categories)")
+        else:
+            self.cpm_estimator = None
+            # Legacy fallback CPM data
+            self.cpm_rates = {
+                'ai': {'rate': 8.0, 'source': 'Tech + AI premium'},
+                'crypto': {'rate': 10.0, 'source': 'Finance tier'},
+                'finance': {'rate': 12.0, 'source': 'Tier 1 Premium'},
+                'investing': {'rate': 11.0, 'source': 'Finance/Investing'},
+                'business': {'rate': 8.0, 'source': 'Business premium'},
+                'tech': {'rate': 4.15, 'source': 'Tech baseline'},
+                'gaming': {'rate': 2.5, 'source': 'Gaming content'},
+                'fitness': {'rate': 3.5, 'source': 'Health & Fitness'},
+                'education': {'rate': 4.9, 'source': 'Education'},
+            }
+            logger.info("NicheScorer initialized with legacy CPM rates")
     
     def quick_score(self, niche_name: str) -> float:
         """Fast scoring without expensive API calls (Phase 1)"""
@@ -1356,7 +1364,19 @@ class NicheScorer:
         return min(max(score + random.randint(-8, 12), 15), 95)
     
     def _estimate_cpm(self, niche: str) -> dict:
-        """Get CPM estimate for niche"""
+        """Get CPM estimate for niche using advanced estimator or legacy fallback"""
+        # Use new CPM Estimator if available
+        if self.cpm_estimator:
+            result = self.cpm_estimator.estimate_cpm(niche)
+            return {
+                'rate': result.get('cpm', 3.5),
+                'source': result.get('source', 'CPM Database'),
+                'tier': self._get_tier(result.get('cpm', 3.5)),
+                'confidence': result.get('confidence', 0.5),
+                'category': result.get('category', 'unknown')
+            }
+        
+        # Legacy fallback
         for keyword, data in self.cpm_rates.items():
             if keyword in niche:
                 return {
@@ -1365,8 +1385,8 @@ class NicheScorer:
                     'tier': self._get_tier(data['rate'])
                 }
         return {
-            'rate': 3.0,
-            'source': 'PM Research: General content baseline',
+            'rate': 3.5,
+            'source': 'Default estimate',
             'tier': 'Tier 3: Moderate'
         }
     
