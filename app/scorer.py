@@ -108,7 +108,7 @@ class NicheScorer:
                 'competition': {
                     'score': round(competition_score, 1),
                     'max_points': 25,
-                    'details': f'{search_data["channel_count"]} channels, {search_data["avg_growth"]:.1%} growth',
+                    'details': f'{search_data.get("channel_count", "N/A")} channels, {search_data.get("avg_growth", 0) or 0:.1%} growth',
                     'data_source': '🔴 LIVE: yt-dlp API'
                 },
                 'monetization': {
@@ -279,8 +279,8 @@ class NicheScorer:
     
     def _calc_competition_score(self, data: dict) -> float:
         """Calculate competition score"""
-        channels = data['channel_count']
-        growth = data['avg_growth']
+        channels = data.get('channel_count') or 0
+        growth = data.get('avg_growth') or 0
         
         if channels < 200: comp = 20
         elif channels < 500: comp = 16
