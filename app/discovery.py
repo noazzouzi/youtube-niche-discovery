@@ -17,10 +17,10 @@ try:
     import sys
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from ytdlp_data_source import YtDlpDataSource, ContentTypeAnalyzer
+    from ytdlp_data_source import YtDlpDataSource
 except ImportError:
     logger = logging.getLogger(__name__)
-    logger.error("YtDlpDataSource/ContentTypeAnalyzer not found! Make sure ytdlp_data_source.py is in the parent directory.")
+    logger.error("YtDlpDataSource not found! Make sure ytdlp_data_source.py is in the parent directory.")
 
 logger = logging.getLogger(__name__)
 
@@ -33,9 +33,15 @@ class ChannelDiscovery:
         self.cache = cache
         logger.info("ChannelDiscovery initialized")
     
-    def find_rising_star_channels(self, niche: str, max_results: int = 50) -> dict:
-        """Find rising star channels in a niche using optimized video metadata approach"""
-        logger.info(f"Finding rising star channels for: {niche} (OPTIMIZED)")
+    def find_rising_star_channels(self, niche: str, max_results: int = 50, min_duration_minutes: int = 40) -> dict:
+        """Find rising star channels in a niche using optimized video metadata approach
+        
+        Args:
+            niche: The niche to search for
+            max_results: Maximum number of videos to search
+            min_duration_minutes: Minimum average video duration in minutes (default 40 for long-form monetization)
+        """
+        logger.info(f"Finding rising star channels for: {niche} (OPTIMIZED, min_duration={min_duration_minutes}m)")
         start_time = time.time()
         
         try:
@@ -84,10 +90,10 @@ class ChannelDiscovery:
             channel_list = list(channels.values())
             channel_list.sort(key=lambda x: x['video_count'], reverse=True)
             
-            # Get detailed info for top 10 channels to extract subscriber data
+            # Get detailed info for top 10 channels to extract subscriber data and duration
             for i, channel_data in enumerate(channel_list[:10]):
                 try:
-                    # Get one video's detailed metadata to extract channel follower count
+                    # Get video's detailed metadata to extract channel follower count and duration
                     first_video = channel_data['videos'][0]
                     video_id = first_video.get('id', {}).get('videoId')
                     if video_id:
@@ -101,6 +107,17 @@ class ChannelDiscovery:
                                 # Rough estimate: multiply by video count
                                 avg_views = video_info.get('view_count', 0)
                                 channel_data['total_views'] = avg_views * channel_data['video_count']
+                            
+                            # Extract duration (in seconds) and convert to minutes
+                            duration_seconds = video_info.get('duration', 0)
+                            avg_duration_minutes = duration_seconds / 60 if duration_seconds else 0
+                            channel_data['avg_duration_minutes'] = round(avg_duration_minutes, 1)
+                            channel_data['has_long_videos'] = avg_duration_minutes >= min_duration_minutes
+                    
+                    # Set defaults if not fetched
+                    if 'avg_duration_minutes' not in channel_data:
+                        channel_data['avg_duration_minutes'] = 0
+                        channel_data['has_long_videos'] = False
                     
                     # Small delay to be nice
                     if i < 9:
@@ -111,50 +128,19 @@ class ChannelDiscovery:
                     # Set fallback values
                     channel_data['subscribers'] = 0
                     channel_data['total_views'] = 0
+                    channel_data['avg_duration_minutes'] = 0
+                    channel_data['has_long_videos'] = False
             
-            # Step 3.5: Analyze content types for faceless content detection
-            content_type_analyzer = ContentTypeAnalyzer()
-            for ch_id, ch_data in channels.items():
-                try:
-                    # Prepare channel data for content type analysis
-                    analysis_data = {
-                        'snippet': {
-                            'title': ch_data.get('name', ''),
-                            'description': ''  # We don't have channel description in this context
-                        },
-                        'videos': ch_data.get('videos', [])
-                    }
-                    
-                    # Analyze content type
-                    content_analysis = content_type_analyzer.analyze_channel(analysis_data)
-                    ch_data.update({
-                        'content_type': content_analysis['content_type'],
-                        'faceless_score': content_analysis['faceless_score'],
-                        'copy_indicators': content_analysis['copy_indicators'],
-                        'avg_duration_minutes': content_analysis.get('avg_duration_minutes', 0),
-                        'has_long_videos': content_analysis.get('has_long_videos', False)
-                    })
-                    
-                    logger.debug(f"Content analysis for {ch_data['name']}: {content_analysis['content_type']} (score: {content_analysis['faceless_score']})")
-                
-                except Exception as e:
-                    logger.warning(f"Error analyzing content type for channel {ch_id}: {e}")
-                    # Set fallback values
-                    ch_data.update({
-                        'content_type': 'unknown',
-                        'faceless_score': 0,
-                        'copy_indicators': [],
-                        'avg_duration_minutes': 0,
-                        'has_long_videos': False
-                    })
-            
-            # Step 4: Calculate rising star scores  
+            # Step 4: Calculate rising star scores (with duration filter)
             rising_stars = []
+            filtered_count = 0
             for ch_id, ch_data in channels.items():
                 try:
-                    # FILTER: Only include channels with 20+ min average videos
-                    if not ch_data.get('has_long_videos', False):
-                        logger.debug(f"Skipping {ch_data.get('name', 'unknown')} - avg duration < 20 min")
+                    # FILTER: Only include channels with avg duration >= min_duration_minutes
+                    avg_duration = ch_data.get('avg_duration_minutes', 0)
+                    if avg_duration > 0 and avg_duration < min_duration_minutes:
+                        logger.debug(f"Skipping {ch_data.get('name', 'unknown')} - avg duration {avg_duration:.1f}m < {min_duration_minutes}m")
+                        filtered_count += 1
                         continue
                     
                     score = self._calculate_rising_star_score_from_aggregated_data(ch_data)
@@ -164,6 +150,9 @@ class ChannelDiscovery:
                 except Exception as e:
                     logger.warning(f"Error scoring channel {ch_id}: {e}")
                     continue
+            
+            if filtered_count > 0:
+                logger.info(f"Filtered {filtered_count} channels with avg duration < {min_duration_minutes}m")
             
             # Step 5: Sort and return top channels
             rising_stars.sort(key=lambda x: x['rising_star_score'], reverse=True)
@@ -177,6 +166,8 @@ class ChannelDiscovery:
                 'analysis': {
                     'total_channels_found': len(channels),
                     'rising_stars_identified': len(top_rising_stars),
+                    'filtered_by_duration': filtered_count,
+                    'min_duration_filter': min_duration_minutes,
                     'best_opportunity': top_rising_stars[0]['name'] if top_rising_stars else None,
                     'analysis_time': round(analysis_time, 2),
                     'optimization': 'ENABLED - Using video metadata aggregation'

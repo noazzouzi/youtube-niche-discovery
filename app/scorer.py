@@ -147,21 +147,38 @@ class NicheScorer:
             channels = [i for i in results['items'] if i['id']['kind'] == 'youtube#channel']
             total = results.get('pageInfo', {}).get('totalResults', 0)
             
+            # Calculate view velocity from actual video data
+            videos = [i for i in results['items'] if i['id']['kind'] == 'youtube#video']
+            avg_growth = None
+            if videos:
+                # Estimate growth from view counts if available
+                view_counts = [v.get('statistics', {}).get('viewCount', 0) for v in videos[:10]]
+                view_counts = [int(v) for v in view_counts if v]
+                if view_counts:
+                    avg_views = sum(view_counts) / len(view_counts)
+                    # Rough growth estimate: higher avg views = growing niche
+                    avg_growth = min(0.25, max(0.02, avg_views / 1000000))
+            
             return {
                 'search_volume': min(max(total * 50, 10000), 1500000),
-                'channel_count': len(channels) * random.randint(20, 60),
-                'avg_growth': random.uniform(0.08, 0.18)
+                'channel_count': len(channels),
+                'channel_count_note': f'Sampled from {len(results["items"])} search results',
+                'avg_growth': avg_growth,
+                'avg_growth_note': 'Estimated from view velocity' if avg_growth else 'Insufficient data'
             }
         except Exception as e:
             logger.warning(f"yt-dlp metrics fallback for {niche}: {e}")
             return self._fallback_metrics(niche)
     
     def _fallback_metrics(self, niche: str) -> dict:
-        """Fallback metrics when API fails"""
+        """Fallback metrics when API fails - returns None for unknown values"""
         return {
-            'search_volume': random.randint(50000, 500000),
-            'channel_count': random.randint(100, 1000),
-            'avg_growth': random.uniform(0.05, 0.15)
+            'search_volume': None,
+            'search_volume_note': 'API unavailable - no data',
+            'channel_count': None,
+            'channel_count_note': 'API unavailable - no data',
+            'avg_growth': None,
+            'avg_growth_note': 'API unavailable - no data'
         }
     
     def _estimate_trends_from_keywords(self, niche: str) -> int:

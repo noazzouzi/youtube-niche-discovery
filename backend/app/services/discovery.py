@@ -253,12 +253,16 @@ class NicheDiscoveryEngine:
             return await self.youtube_scraper.get_niche_metrics(niche)
         except Exception as e:
             logger.warning(f"YouTube metrics failed for '{niche}': {e}")
-            # Return estimated values
+            # Return None for unavailable data - no fake random values
             return {
-                'search_volume': random.randint(10000, 500000),
-                'channel_count': random.randint(50, 1000),
-                'avg_growth': random.uniform(0.05, 0.25),
-                'estimated_cpm': random.uniform(1.0, 8.0)
+                'search_volume': None,
+                'search_volume_note': 'API unavailable',
+                'channel_count': None,
+                'channel_count_note': 'API unavailable',
+                'avg_growth': None,
+                'avg_growth_note': 'API unavailable',
+                'estimated_cpm': None,
+                'estimated_cpm_note': 'API unavailable'
             }
     
     async def _get_trends_metrics(self, niche: str) -> Dict[str, Any]:

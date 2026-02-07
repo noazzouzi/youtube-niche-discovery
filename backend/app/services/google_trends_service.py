@@ -1,6 +1,11 @@
 """
 Google Trends Service - Search trend analysis for niche discovery
 Implements Google Trends integration for PM Agent's 100-point scoring algorithm
+
+Includes direction-aware trend detection:
+- Linear regression for slope calculation
+- Period comparison (first-half vs second-half)
+- Momentum calculation (recent vs average)
 """
 
 import logging
@@ -8,11 +13,109 @@ from typing import List, Dict, Any, Optional
 import asyncio
 from datetime import datetime, timedelta
 import json
+import numpy as np
 
 from pytrends.request import TrendReq
 from app.models.metric import Metric
 
 logger = logging.getLogger(__name__)
+
+
+def _calculate_trend_direction(values: List[float]) -> Dict[str, Any]:
+    """Calculate trend direction using linear regression slope (numpy polyfit)."""
+    if not values or len(values) < 2:
+        return {'slope': 0.0, 'direction': 'stable', 'strength': 0.0, 'r_squared': 0.0}
+    
+    clean_values = [v for v in values if v is not None and not np.isnan(v)]
+    if len(clean_values) < 2:
+        return {'slope': 0.0, 'direction': 'stable', 'strength': 0.0, 'r_squared': 0.0}
+    
+    x = np.arange(len(clean_values))
+    y = np.array(clean_values)
+    
+    coeffs = np.polyfit(x, y, 1)
+    slope = coeffs[0]
+    
+    y_pred = np.polyval(coeffs, x)
+    ss_res = np.sum((y - y_pred) ** 2)
+    ss_tot = np.sum((y - np.mean(y)) ** 2)
+    r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+    
+    normalized_slope = slope / max(np.mean(y), 1) * 100
+    
+    if normalized_slope > 0.5:
+        direction = 'rising'
+    elif normalized_slope < -0.5:
+        direction = 'falling'
+    else:
+        direction = 'stable'
+    
+    return {
+        'slope': float(slope),
+        'direction': direction,
+        'strength': min(abs(normalized_slope) * 10, 100),
+        'r_squared': float(max(0, min(1, r_squared)))
+    }
+
+
+def _compare_periods(values: List[float]) -> Dict[str, Any]:
+    """Compare first-half vs second-half of trend data."""
+    if not values or len(values) < 4:
+        return {'first_half_avg': 0.0, 'second_half_avg': 0.0, 'change_percent': 0.0, 'direction': 'stable'}
+    
+    clean_values = [v for v in values if v is not None]
+    if len(clean_values) < 4:
+        return {'first_half_avg': 0.0, 'second_half_avg': 0.0, 'change_percent': 0.0, 'direction': 'stable'}
+    
+    midpoint = len(clean_values) // 2
+    first_avg = sum(clean_values[:midpoint]) / midpoint
+    second_avg = sum(clean_values[midpoint:]) / (len(clean_values) - midpoint)
+    
+    change_percent = ((second_avg - first_avg) / first_avg * 100) if first_avg > 0 else 0.0
+    
+    if change_percent > 10:
+        direction = 'rising'
+    elif change_percent < -10:
+        direction = 'falling'
+    else:
+        direction = 'stable'
+    
+    return {
+        'first_half_avg': first_avg,
+        'second_half_avg': second_avg,
+        'change_percent': change_percent,
+        'direction': direction
+    }
+
+
+def _calculate_momentum(values: List[float], recent_window: int = 4) -> Dict[str, Any]:
+    """Calculate momentum by comparing recent values to overall average."""
+    if not values or len(values) < recent_window + 1:
+        return {'recent_avg': 0.0, 'overall_avg': 0.0, 'momentum_score': 0.0, 'direction': 'stable'}
+    
+    clean_values = [v for v in values if v is not None]
+    if len(clean_values) < recent_window + 1:
+        return {'recent_avg': 0.0, 'overall_avg': 0.0, 'momentum_score': 0.0, 'direction': 'stable'}
+    
+    recent_avg = sum(clean_values[-recent_window:]) / recent_window
+    overall_avg = sum(clean_values) / len(clean_values)
+    
+    momentum_score = ((recent_avg - overall_avg) / overall_avg * 100) if overall_avg > 0 else 0.0
+    momentum_score = max(-100, min(100, momentum_score))
+    
+    if momentum_score > 15:
+        direction = 'accelerating'
+    elif momentum_score < -15:
+        direction = 'decelerating'
+    else:
+        direction = 'stable'
+    
+    return {
+        'recent_avg': recent_avg,
+        'overall_avg': overall_avg,
+        'momentum_score': momentum_score,
+        'direction': direction
+    }
 
 class GoogleTrendsService:
     """
@@ -58,18 +161,48 @@ class GoogleTrendsService:
             # Rate limiting
             await asyncio.sleep(self.rate_limit_delay)
             
-            # 2. Get current trending score
-            trending_score = await self._get_trending_score(search_terms[0])
-            if trending_score is not None:
+            # 2. Get current trending score with direction detection
+            trending_data = await self._get_trending_score(search_terms[0])
+            if trending_data is not None:
+                # Main trending score (direction-adjusted)
                 metrics.append(Metric(
                     niche_id=niche_id,
                     source_id=2,  # Google Trends source
                     metric_type="search_volume",
                     metric_name="google_trends_score",
-                    value=trending_score,
+                    value=trending_data['score'],
                     period="current",
-                    confidence_score=95.0,  # Google Trends is very reliable
-                    collected_at=datetime.utcnow()
+                    confidence_score=95.0,
+                    collected_at=datetime.utcnow(),
+                    raw_data=json.dumps({
+                        'base_score': trending_data['base_score'],
+                        'direction': trending_data['direction'],
+                        'direction_confidence': trending_data['direction_confidence']
+                    })
+                ))
+                
+                # Trend direction metric for scoring
+                direction_value = 0  # stable
+                if trending_data['direction'] == 'rising':
+                    direction_value = 1
+                elif trending_data['direction'] == 'falling':
+                    direction_value = -1
+                    
+                metrics.append(Metric(
+                    niche_id=niche_id,
+                    source_id=2,
+                    metric_type="trend_momentum",
+                    metric_name="trend_direction",
+                    value=direction_value,
+                    period="current",
+                    confidence_score=trending_data['direction_confidence'],
+                    collected_at=datetime.utcnow(),
+                    raw_data=json.dumps({
+                        'direction': trending_data['direction'],
+                        'period_change': trending_data['period_change'],
+                        'momentum': trending_data['momentum'],
+                        'slope': trending_data['slope']
+                    })
                 ))
             
             # Rate limiting
@@ -152,21 +285,80 @@ class GoogleTrendsService:
         
         return None
     
-    async def _get_trending_score(self, keyword: str) -> Optional[float]:
-        """Get current trending score (0-100) for a keyword"""
+    async def _get_trending_score(self, keyword: str) -> Optional[Dict[str, Any]]:
+        """
+        Get current trending score with direction detection.
+        
+        Returns:
+            Dict with:
+            - score: Direction-adjusted score (0-100)
+            - base_score: Raw average
+            - direction: 'rising', 'falling', or 'stable'
+            - direction_confidence: Confidence in direction (0-100)
+            - period_change: YoY-style percentage change
+            - momentum: Recent momentum score
+        """
         try:
-            # Get recent trend data (last 3 months)
+            # Get recent trend data (last 3 months for current state)
             trend_data = await self._get_interest_over_time([keyword], timeframe='today 3-m')
             
             if trend_data and keyword in trend_data.get("values", {}):
                 values = trend_data["values"][keyword]
+                clean_values = [v for v in values if v is not None]
                 
-                if values and len(values) > 0:
-                    # Calculate trending score based on recent average
-                    recent_values = [v for v in values if v is not None]
-                    if recent_values:
-                        avg_score = sum(recent_values) / len(recent_values)
-                        return float(avg_score)
+                if clean_values and len(clean_values) > 0:
+                    # Calculate base score
+                    base_score = sum(clean_values) / len(clean_values)
+                    
+                    # Get direction analysis
+                    regression = _calculate_trend_direction(clean_values)
+                    period_comp = _compare_periods(clean_values)
+                    momentum = _calculate_momentum(clean_values)
+                    
+                    # Determine overall direction
+                    directions = [regression['direction'], period_comp['direction']]
+                    if momentum['direction'] == 'accelerating':
+                        directions.append('rising')
+                    elif momentum['direction'] == 'decelerating':
+                        directions.append('falling')
+                    else:
+                        directions.append('stable')
+                    
+                    rising = sum(1 for d in directions if d == 'rising')
+                    falling = sum(1 for d in directions if d == 'falling')
+                    
+                    if rising > falling:
+                        overall_direction = 'rising'
+                    elif falling > rising:
+                        overall_direction = 'falling'
+                    else:
+                        overall_direction = 'stable'
+                    
+                    # Calculate confidence
+                    agreement = max(rising, falling, 3 - rising - falling) / 3
+                    confidence = (agreement * 0.6 + regression['r_squared'] * 0.4) * 100
+                    
+                    # Adjust score based on direction
+                    adjustment = 0.0
+                    if overall_direction == 'rising':
+                        adjustment = min(20, regression['strength'] * 0.2) * (confidence / 100)
+                    elif overall_direction == 'falling':
+                        adjustment = -min(20, regression['strength'] * 0.2) * (confidence / 100)
+                    
+                    adjusted_score = max(0, min(100, base_score + adjustment))
+                    
+                    logger.debug(f"Trend score for '{keyword}': {adjusted_score:.1f} "
+                               f"(base:{base_score:.1f}, dir:{overall_direction}, conf:{confidence:.0f}%)")
+                    
+                    return {
+                        'score': float(adjusted_score),
+                        'base_score': float(base_score),
+                        'direction': overall_direction,
+                        'direction_confidence': float(confidence),
+                        'period_change': float(period_comp['change_percent']),
+                        'momentum': float(momentum['momentum_score']),
+                        'slope': float(regression['slope'])
+                    }
             
         except Exception as e:
             logger.error(f"Error calculating trending score: {e}")
@@ -357,15 +549,13 @@ class GoogleTrendsService:
 
     async def discover_trending_keywords(self, category: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Discover trending keywords that could become niches
+        Discover trending keywords that could become niches.
+        Now includes direction detection to prioritize rising trends.
         """
         trending_keywords = []
         
         try:
-            # Get trending searches (this is a simplified version)
-            # In practice, you might want to use Google Trends' trending searches API
-            # or analyze rising topics across multiple categories
-            
+            # Sample keywords (in practice, use Google Trends trending searches API)
             sample_keywords = [
                 "AI tools", "passive income", "crypto trading", "home workout",
                 "sustainable living", "digital nomad", "mindfulness", "plant care",
@@ -374,12 +564,16 @@ class GoogleTrendsService:
             
             for keyword in sample_keywords:
                 try:
-                    trending_score = await self._get_trending_score(keyword)
+                    trending_data = await self._get_trending_score(keyword)
                     
-                    if trending_score and trending_score > 20:  # Minimum threshold
+                    if trending_data and trending_data.get('score', 0) > 20:
                         trending_keywords.append({
                             "keyword": keyword,
-                            "trending_score": trending_score,
+                            "trending_score": trending_data['score'],
+                            "base_score": trending_data.get('base_score', trending_data['score']),
+                            "direction": trending_data.get('direction', 'stable'),
+                            "direction_confidence": trending_data.get('direction_confidence', 0),
+                            "momentum": trending_data.get('momentum', 0),
                             "discovery_source": "google_trends",
                             "category": category or "general"
                         })
@@ -390,8 +584,13 @@ class GoogleTrendsService:
                     logger.error(f"Error checking keyword '{keyword}': {e}")
                     continue
             
-            # Sort by trending score
-            trending_keywords.sort(key=lambda x: x["trending_score"], reverse=True)
+            # Sort by trending score, with rising trends getting priority
+            # Rising trends with same score should rank higher than falling
+            def sort_key(x):
+                direction_bonus = {'rising': 10, 'stable': 0, 'falling': -10}
+                return x["trending_score"] + direction_bonus.get(x.get("direction", "stable"), 0)
+            
+            trending_keywords.sort(key=sort_key, reverse=True)
             
         except Exception as e:
             logger.error(f"Error discovering trending keywords: {e}")

@@ -238,24 +238,34 @@ class NicheScorer:
         self.youtube_api = youtube_api
         self.trends_api = trends_api
         
-        # CPM data with sources
+        # DEPRECATED: This file is deprecated. Use backend/app/services/cpm_estimator.py instead.
+        # CPM data with REAL sources (Lenostube, Outlierkit, SMBillion, FirstGrowthAgency)
+        # See backend/app/data/cpm_database.py for the comprehensive 70+ category database
         self.cpm_rates = {
-            'ai': {'rate': 8.0, 'source': 'PM Research: Tech + AI premium'},
-            'artificial intelligence': {'rate': 8.5, 'source': 'PM Research: AI/Tech premium'},
-            'crypto': {'rate': 10.0, 'source': 'PM Research: Finance tier'},
-            'bitcoin': {'rate': 11.0, 'source': 'PM Research: Crypto premium'},
-            'finance': {'rate': 12.0, 'source': 'PM Research: Tier 1 Premium'},
-            'investing': {'rate': 11.0, 'source': 'PM Research: Finance/Investing'},
-            'business': {'rate': 8.0, 'source': 'PM Research: Business premium'},
-            'tech': {'rate': 4.15, 'source': 'PM Research: Tech baseline $4.15'},
-            'tutorial': {'rate': 5.5, 'source': 'PM Research: Educational premium'},
-            'japanese': {'rate': 2.8, 'source': 'PM Research: Entertainment/International'},
-            'gaming': {'rate': 2.5, 'source': 'PM Research: Gaming content'},
-            'fitness': {'rate': 3.5, 'source': 'PM Research: Health & Fitness'},
-            'education': {'rate': 4.9, 'source': 'PM Research: Education $4.90'},
-            'lifestyle': {'rate': 3.0, 'source': 'PM Research: Lifestyle content'}
+            'ai': {'rate': 9.0, 'source': 'Outlierkit - AI/Tech emerging niche'},
+            'artificial intelligence': {'rate': 9.0, 'source': 'Outlierkit - AI/Tech emerging'},
+            'crypto': {'rate': 12.0, 'source': 'SMBillion - declined from 2021 peak'},
+            'bitcoin': {'rate': 12.0, 'source': 'SMBillion - crypto/finance tier'},
+            'finance': {'rate': 15.0, 'source': 'Lenostube, Outlierkit - Tier 1 Premium'},
+            'investing': {'rate': 14.0, 'source': 'Outlierkit, Andrei Jikh data'},
+            'business': {'rate': 9.0, 'source': 'Lenostube - business/entrepreneurship'},
+            'tech': {'rate': 8.0, 'source': 'Lenostube - wide variance $5-30'},
+            'tutorial': {'rate': 10.0, 'source': 'Outlierkit - software/educational'},
+            'japanese': {'rate': 3.0, 'source': 'Entertainment tier estimate'},
+            'gaming': {'rate': 3.5, 'source': 'Lenostube, PewDiePie data $2-4 RPM'},
+            'fitness': {'rate': 5.0, 'source': 'Lenostube - supplement advertisers'},
+            'education': {'rate': 12.0, 'source': 'Lenostube, Khan Academy data'},
+            'lifestyle': {'rate': 4.5, 'source': 'Lenostube - lifestyle tier'},
+            'anime': {'rate': 3.0, 'source': 'Reddit r/PartneredYoutube'},
+            'manga': {'rate': 4.0, 'source': 'Reddit - $2.5-6 RPM reported'},
+            'manhwa': {'rate': 4.5, 'source': 'Outlierkit - growing webtoon niche'},
+            'cooking': {'rate': 5.0, 'source': 'Lenostube, FirstGrowthAgency'},
+            'travel': {'rate': 8.0, 'source': 'Lenostube - seasonal variance'},
+            'beauty': {'rate': 7.0, 'source': 'Lenostube'},
+            'comedy': {'rate': 3.0, 'source': 'Lenostube'},
+            'music': {'rate': 2.0, 'source': 'Lenostube - lowest CPM niche'},
         }
-        logger.info("NicheScorer initialized")
+        logger.info("NicheScorer initialized (DEPRECATED - use backend/app/services/cpm_estimator.py)")
     
     def quick_score(self, niche_name: str) -> float:
         """Fast scoring without expensive API calls (Phase 1)"""
@@ -393,7 +403,10 @@ class NicheScorer:
         return min(max(score + random.randint(-8, 12), 15), 95)
     
     def _estimate_cpm(self, niche: str) -> dict:
-        """Get CPM estimate for niche"""
+        """Get CPM estimate for niche
+        
+        DEPRECATED: Use backend/app/services/cpm_estimator.py for proper fuzzy matching
+        """
         for keyword, data in self.cpm_rates.items():
             if keyword in niche:
                 return {
@@ -402,9 +415,9 @@ class NicheScorer:
                     'tier': self._get_tier(data['rate'])
                 }
         return {
-            'rate': 3.0,
-            'source': 'PM Research: General content baseline',
-            'tier': 'Tier 3: Moderate'
+            'rate': 3.50,  # Updated from $3.00 based on global YouTube average
+            'source': 'Global YouTube average (Lenostube aggregate data)',
+            'tier': 'Tier 4: Entertainment'
         }
     
     def _analyze_content_availability(self, niche: str, search_data: dict = None) -> float:

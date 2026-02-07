@@ -269,6 +269,12 @@ body {
     font-size: 0.95em;
 }
 
+/* Placeholder Text */
+.loading-placeholder {
+    color: #666;
+    font-style: italic;
+}
+
 /* Loading State */
 .loading {
     text-align: center;

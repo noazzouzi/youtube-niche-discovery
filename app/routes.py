@@ -82,7 +82,7 @@ class RequestHandler:
         logger.info(f"Analyzing niche: {niche_name}")
         
         try:
-            cache, ytdlp_data_source, trends_api, niche_scorer, recommendation_engine, channel_discovery, competitor_analyzer, content_type_analyzer = get_shared_components()
+            cache, ytdlp_data_source, trends_api, niche_scorer, recommendation_engine, channel_discovery, competitor_analyzer = get_shared_components()
             
             # Get full score for the main niche
             result = niche_scorer.full_score(niche_name)
@@ -121,7 +121,7 @@ class RequestHandler:
         logger.info(f"Discovering channels for: {niche}")
         
         try:
-            cache, ytdlp_data_source, trends_api, niche_scorer, recommendation_engine, channel_discovery, competitor_analyzer, content_type_analyzer = get_shared_components()
+            cache, ytdlp_data_source, trends_api, niche_scorer, recommendation_engine, channel_discovery, competitor_analyzer = get_shared_components()
             
             # Get channel discovery results
             result = channel_discovery.find_rising_star_channels(niche)
@@ -157,7 +157,7 @@ class RequestHandler:
         logger.info(f"Analyzing competitors for: {niche}")
         
         try:
-            cache, ytdlp_data_source, trends_api, niche_scorer, recommendation_engine, channel_discovery, competitor_analyzer, content_type_analyzer = get_shared_components()
+            cache, ytdlp_data_source, trends_api, niche_scorer, recommendation_engine, channel_discovery, competitor_analyzer = get_shared_components()
             
             # Get competitor analysis results
             result = competitor_analyzer.analyze_competitors(niche)

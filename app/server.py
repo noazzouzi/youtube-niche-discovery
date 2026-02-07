@@ -29,7 +29,7 @@ from .discovery import ChannelDiscovery
 from .competitors import CompetitorAnalyzer
 from .routes import RequestHandler, set_shared_components
 
-from ytdlp_data_source import YtDlpDataSource, ContentTypeAnalyzer
+from ytdlp_data_source import YtDlpDataSource
 
 # Configure logging
 logging.basicConfig(
@@ -59,12 +59,10 @@ def init_shared_components():
     recommendation_engine = RecommendationEngine(niche_scorer)
     channel_discovery = ChannelDiscovery(ytdlp_data_source, cache)
     competitor_analyzer = CompetitorAnalyzer(ytdlp_data_source, cache)
-    content_type_analyzer = ContentTypeAnalyzer()
     
     components = (
         cache, ytdlp_data_source, trends_api, niche_scorer,
-        recommendation_engine, channel_discovery, competitor_analyzer,
-        content_type_analyzer
+        recommendation_engine, channel_discovery, competitor_analyzer
     )
     set_shared_components(components)
     

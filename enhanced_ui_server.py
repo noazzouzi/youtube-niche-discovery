@@ -30,9 +30,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Import the new YtDlpDataSource and ContentTypeAnalyzer (must be in same directory)
+# Import the new YtDlpDataSource (must be in same directory)
 try:
-    from ytdlp_data_source import YtDlpDataSource, ContentTypeAnalyzer
+    from ytdlp_data_source import YtDlpDataSource
 except ImportError:
     logger.error("YtDlpDataSource not found! Make sure ytdlp_data_source.py is in the same directory.")
     sys.exit(1)
@@ -795,9 +795,15 @@ class ChannelDiscovery:
         self.cache = cache
         logger.info("ChannelDiscovery initialized")
     
-    def find_rising_star_channels(self, niche: str, max_results: int = 50) -> dict:
-        """Find rising star channels in a niche using optimized video metadata approach"""
-        logger.info(f"Finding rising star channels for: {niche} (OPTIMIZED)")
+    def find_rising_star_channels(self, niche: str, max_results: int = 50, min_duration_minutes: int = 40) -> dict:
+        """Find rising star channels in a niche using optimized video metadata approach
+        
+        Args:
+            niche: The niche to search for
+            max_results: Maximum number of videos to search
+            min_duration_minutes: Minimum average video duration in minutes (default 40 for long-form monetization)
+        """
+        logger.info(f"Finding rising star channels for: {niche} (OPTIMIZED, min_duration={min_duration_minutes}m)")
         start_time = time.time()
         
         try:
@@ -846,10 +852,10 @@ class ChannelDiscovery:
             channel_list = list(channels.values())
             channel_list.sort(key=lambda x: x['video_count'], reverse=True)
             
-            # Get detailed info for top 10 channels to extract subscriber data
+            # Get detailed info for top 10 channels to extract subscriber data and duration
             for i, channel_data in enumerate(channel_list[:10]):
                 try:
-                    # Get one video's detailed metadata to extract channel follower count
+                    # Get video's detailed metadata to extract channel follower count and duration
                     first_video = channel_data['videos'][0]
                     video_id = first_video.get('id', {}).get('videoId')
                     if video_id:
@@ -863,6 +869,17 @@ class ChannelDiscovery:
                                 # Rough estimate: multiply by video count
                                 avg_views = video_info.get('view_count', 0)
                                 channel_data['total_views'] = avg_views * channel_data['video_count']
+                            
+                            # Extract duration (in seconds) and convert to minutes
+                            duration_seconds = video_info.get('duration', 0)
+                            avg_duration_minutes = duration_seconds / 60 if duration_seconds else 0
+                            channel_data['avg_duration_minutes'] = round(avg_duration_minutes, 1)
+                            channel_data['has_long_videos'] = avg_duration_minutes >= min_duration_minutes
+                    
+                    # Set defaults if not fetched
+                    if 'avg_duration_minutes' not in channel_data:
+                        channel_data['avg_duration_minutes'] = 0
+                        channel_data['has_long_videos'] = False
                     
                     # Small delay to be nice
                     if i < 9:
@@ -873,50 +890,19 @@ class ChannelDiscovery:
                     # Set fallback values
                     channel_data['subscribers'] = 0
                     channel_data['total_views'] = 0
+                    channel_data['avg_duration_minutes'] = 0
+                    channel_data['has_long_videos'] = False
             
-            # Step 3.5: Analyze content types for faceless content detection
-            content_type_analyzer = ContentTypeAnalyzer()
-            for ch_id, ch_data in channels.items():
-                try:
-                    # Prepare channel data for content type analysis
-                    analysis_data = {
-                        'snippet': {
-                            'title': ch_data.get('name', ''),
-                            'description': ''  # We don't have channel description in this context
-                        },
-                        'videos': ch_data.get('videos', [])
-                    }
-                    
-                    # Analyze content type
-                    content_analysis = content_type_analyzer.analyze_channel(analysis_data)
-                    ch_data.update({
-                        'content_type': content_analysis['content_type'],
-                        'faceless_score': content_analysis['faceless_score'],
-                        'copy_indicators': content_analysis['copy_indicators'],
-                        'avg_duration_minutes': content_analysis.get('avg_duration_minutes', 0),
-                        'has_long_videos': content_analysis.get('has_long_videos', False)
-                    })
-                    
-                    logger.debug(f"Content analysis for {ch_data['name']}: {content_analysis['content_type']} (score: {content_analysis['faceless_score']})")
-                
-                except Exception as e:
-                    logger.warning(f"Error analyzing content type for channel {ch_id}: {e}")
-                    # Set fallback values
-                    ch_data.update({
-                        'content_type': 'unknown',
-                        'faceless_score': 0,
-                        'copy_indicators': [],
-                        'avg_duration_minutes': 0,
-                        'has_long_videos': False
-                    })
-            
-            # Step 4: Calculate rising star scores  
+            # Step 4: Calculate rising star scores (with duration filter)
             rising_stars = []
+            filtered_count = 0
             for ch_id, ch_data in channels.items():
                 try:
-                    # FILTER: Only include channels with 20+ min average videos
-                    if not ch_data.get('has_long_videos', False):
-                        logger.debug(f"Skipping {ch_data.get('name', 'unknown')} - avg duration < 20 min")
+                    # FILTER: Only include channels with avg duration >= min_duration_minutes
+                    avg_duration = ch_data.get('avg_duration_minutes', 0)
+                    if avg_duration > 0 and avg_duration < min_duration_minutes:
+                        logger.debug(f"Skipping {ch_data.get('name', 'unknown')} - avg duration {avg_duration:.1f}m < {min_duration_minutes}m")
+                        filtered_count += 1
                         continue
                     
                     score = self._calculate_rising_star_score_from_aggregated_data(ch_data)
@@ -926,6 +912,9 @@ class ChannelDiscovery:
                 except Exception as e:
                     logger.warning(f"Error scoring channel {ch_id}: {e}")
                     continue
+            
+            if filtered_count > 0:
+                logger.info(f"Filtered {filtered_count} channels with avg duration < {min_duration_minutes}m")
             
             # Step 5: Sort and return top channels
             rising_stars.sort(key=lambda x: x['rising_star_score'], reverse=True)
@@ -939,6 +928,8 @@ class ChannelDiscovery:
                 'analysis': {
                     'total_channels_found': len(channels),
                     'rising_stars_identified': len(top_rising_stars),
+                    'filtered_by_duration': filtered_count,
+                    'min_duration_filter': min_duration_minutes,
                     'best_opportunity': top_rising_stars[0]['name'] if top_rising_stars else None,
                     'analysis_time': round(analysis_time, 2),
                     'optimization': 'ENABLED - Using video metadata aggregation'
@@ -1307,21 +1298,38 @@ class NicheScorer:
             channels = [i for i in results['items'] if i['id']['kind'] == 'youtube#channel']
             total = results.get('pageInfo', {}).get('totalResults', 0)
             
+            # Calculate view velocity from actual video data
+            videos = [i for i in results['items'] if i['id']['kind'] == 'youtube#video']
+            avg_growth = None
+            if videos:
+                # Estimate growth from view counts if available
+                view_counts = [v.get('statistics', {}).get('viewCount', 0) for v in videos[:10]]
+                view_counts = [int(v) for v in view_counts if v]
+                if view_counts:
+                    avg_views = sum(view_counts) / len(view_counts)
+                    # Rough growth estimate: higher avg views = growing niche
+                    avg_growth = min(0.25, max(0.02, avg_views / 1000000))
+            
             return {
                 'search_volume': min(max(total * 50, 10000), 1500000),
-                'channel_count': len(channels) * random.randint(20, 60),
-                'avg_growth': random.uniform(0.08, 0.18)
+                'channel_count': len(channels),
+                'channel_count_note': f'Sampled from {len(results["items"])} search results',
+                'avg_growth': avg_growth,
+                'avg_growth_note': 'Estimated from view velocity' if avg_growth else 'Insufficient data'
             }
         except Exception as e:
             logger.warning(f"yt-dlp metrics fallback for {niche}: {e}")
             return self._fallback_metrics(niche)
     
     def _fallback_metrics(self, niche: str) -> dict:
-        """Fallback metrics when API fails"""
+        """Fallback metrics when API fails - returns None for unknown values"""
         return {
-            'search_volume': random.randint(50000, 500000),
-            'channel_count': random.randint(100, 1000),
-            'avg_growth': random.uniform(0.05, 0.15)
+            'search_volume': None,
+            'search_volume_note': 'API unavailable - no data',
+            'channel_count': None,
+            'channel_count_note': 'API unavailable - no data',
+            'avg_growth': None,
+            'avg_growth_note': 'API unavailable - no data'
         }
     
     def _estimate_trends_from_keywords(self, niche: str) -> int:
@@ -1575,13 +1583,12 @@ _niche_scorer = None
 _recommendation_engine = None
 _channel_discovery = None
 _competitor_analyzer = None
-_content_type_analyzer = None
 _request_count = 0
 _start_time = time.time()
 
 def get_shared_components():
     """Get shared component instances"""
-    global _cache, _ytdlp_data_source, _trends_api, _niche_scorer, _recommendation_engine, _channel_discovery, _competitor_analyzer, _content_type_analyzer
+    global _cache, _ytdlp_data_source, _trends_api, _niche_scorer, _recommendation_engine, _channel_discovery, _competitor_analyzer
     
     if _cache is None:
         logger.info("Initializing shared components...")
@@ -1592,10 +1599,9 @@ def get_shared_components():
         _recommendation_engine = RecommendationEngine(_niche_scorer)
         _channel_discovery = ChannelDiscovery(_ytdlp_data_source, _cache)
         _competitor_analyzer = CompetitorAnalyzer(_ytdlp_data_source, _cache)
-        _content_type_analyzer = ContentTypeAnalyzer()
         logger.info("Shared components initialized")
     
-    return _cache, _ytdlp_data_source, _trends_api, _niche_scorer, _recommendation_engine, _channel_discovery, _competitor_analyzer, _content_type_analyzer
+    return _cache, _ytdlp_data_source, _trends_api, _niche_scorer, _recommendation_engine, _channel_discovery, _competitor_analyzer
 
 class RequestHandler(BaseHTTPRequestHandler):
     """HTTP request handler with shared components"""
@@ -1615,20 +1621,22 @@ class RequestHandler(BaseHTTPRequestHandler):
             elif parsed.path == '/api/analyze':
                 params = parse_qs(parsed.query)
                 niche = params.get('niche', [''])[0]
+                min_duration = int(params.get('min_duration', ['40'])[0])
                 if not niche:
                     self.send_json({'error': 'Please provide a niche'})
                 else:
-                    result = self.analyze_niche(niche)
+                    result = self.analyze_niche(niche, min_duration_minutes=min_duration)
                     self.send_json(result)
             elif parsed.path == '/api/suggestions':
                 self.send_json(self.get_suggestions())
             elif parsed.path == '/api/channels':
                 params = parse_qs(parsed.query)
                 niche = params.get('niche', [''])[0]
+                min_duration = int(params.get('min_duration', ['40'])[0])
                 if not niche:
                     self.send_json({'error': 'Please provide a niche parameter'})
                 else:
-                    result = self.discover_channels(niche)
+                    result = self.discover_channels(niche, min_duration_minutes=min_duration)
                     self.send_json(result)
             elif parsed.path == '/api/competitors':
                 params = parse_qs(parsed.query)
@@ -1648,13 +1656,18 @@ class RequestHandler(BaseHTTPRequestHandler):
             logger.error(f"Request error: {e}")
             self.send_json({'error': f'Internal error: {str(e)}'})
     
-    def analyze_niche(self, niche_name: str) -> dict:
-        """Analyze niche with two-phase scoring approach"""
+    def analyze_niche(self, niche_name: str, min_duration_minutes: int = 40) -> dict:
+        """Analyze niche with two-phase scoring approach
+        
+        Args:
+            niche_name: The niche to analyze
+            min_duration_minutes: Minimum average video duration filter (default 40m for long-form)
+        """
         start_time = time.time()
-        logger.info(f"Analyzing niche: {niche_name}")
+        logger.info(f"Analyzing niche: {niche_name} (min_duration={min_duration_minutes}m)")
         
         try:
-            cache, ytdlp_data_source, trends_api, niche_scorer, recommendation_engine, channel_discovery, competitor_analyzer, content_type_analyzer = get_shared_components()
+            cache, ytdlp_data_source, trends_api, niche_scorer, recommendation_engine, channel_discovery, competitor_analyzer = get_shared_components()
             
             # Get full score for the main niche
             result = niche_scorer.full_score(niche_name)
@@ -1664,8 +1677,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                 niche_name, result['total_score']
             )
             
-            # Get rising star channels
-            rising_star_channels = channel_discovery.find_rising_star_channels(niche_name)
+            # Get rising star channels (with duration filter)
+            rising_star_channels = channel_discovery.find_rising_star_channels(
+                niche_name, min_duration_minutes=min_duration_minutes
+            )
             
             result['recommendations'] = recommendations
             result['rising_star_channels'] = rising_star_channels
@@ -1687,16 +1702,23 @@ class RequestHandler(BaseHTTPRequestHandler):
             logger.error(f"Analysis error for {niche_name}: {e}")
             raise
     
-    def discover_channels(self, niche: str) -> dict:
-        """Discover rising star channels for a niche"""
+    def discover_channels(self, niche: str, min_duration_minutes: int = 40) -> dict:
+        """Discover rising star channels for a niche
+        
+        Args:
+            niche: The niche to search
+            min_duration_minutes: Minimum average video duration filter (default 40m for long-form)
+        """
         start_time = time.time()
-        logger.info(f"Discovering channels for: {niche}")
+        logger.info(f"Discovering channels for: {niche} (min_duration={min_duration_minutes}m)")
         
         try:
-            cache, ytdlp_data_source, trends_api, niche_scorer, recommendation_engine, channel_discovery, competitor_analyzer, content_type_analyzer = get_shared_components()
+            cache, ytdlp_data_source, trends_api, niche_scorer, recommendation_engine, channel_discovery, competitor_analyzer = get_shared_components()
             
-            # Get channel discovery results
-            result = channel_discovery.find_rising_star_channels(niche)
+            # Get channel discovery results (with duration filter)
+            result = channel_discovery.find_rising_star_channels(
+                niche, min_duration_minutes=min_duration_minutes
+            )
             
             # Add API stats
             discovery_time = time.time() - start_time
@@ -1729,7 +1751,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         logger.info(f"Analyzing competitors for: {niche}")
         
         try:
-            cache, ytdlp_data_source, trends_api, niche_scorer, recommendation_engine, channel_discovery, competitor_analyzer, content_type_analyzer = get_shared_components()
+            cache, ytdlp_data_source, trends_api, niche_scorer, recommendation_engine, channel_discovery, competitor_analyzer = get_shared_components()
             
             # Get competitor analysis results
             result = competitor_analyzer.analyze_competitors(niche)
@@ -1923,6 +1945,69 @@ class RequestHandler(BaseHTTPRequestHandler):
         .suggestions-section {{
             border-top: 1px solid #eee;
             padding-top: 20px;
+        }}
+        
+        .duration-filter-section {{
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 20px;
+        }}
+        
+        .duration-filter-label {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #374151;
+        }}
+        
+        .duration-value {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.9em;
+        }}
+        
+        .duration-slider {{
+            width: 100%;
+            height: 8px;
+            border-radius: 4px;
+            background: #e5e7eb;
+            outline: none;
+            -webkit-appearance: none;
+            appearance: none;
+        }}
+        
+        .duration-slider::-webkit-slider-thumb {{
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            cursor: pointer;
+            box-shadow: 0 2px 6px rgba(102, 126, 234, 0.4);
+        }}
+        
+        .duration-slider::-moz-range-thumb {{
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            cursor: pointer;
+            border: none;
+            box-shadow: 0 2px 6px rgba(102, 126, 234, 0.4);
+        }}
+        
+        .duration-hints {{
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75em;
+            color: #9ca3af;
+            margin-top: 4px;
         }}
         
         .suggestions-header {{
@@ -2228,6 +2313,27 @@ class RequestHandler(BaseHTTPRequestHandler):
             font-weight: 400;
         }}
         
+        .filter-note {{
+            font-size: 0.85em;
+            color: #6b7280;
+            margin-top: 8px;
+            padding: 6px 12px;
+            background: rgba(107, 114, 128, 0.1);
+            border-radius: 8px;
+            display: inline-block;
+        }}
+        
+        .duration-badge {{
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            font-weight: 500;
+            margin-bottom: 12px;
+        }}
+        
         .channel-grid {{
             display: grid;
             gap: 14px;
@@ -2274,125 +2380,6 @@ class RequestHandler(BaseHTTPRequestHandler):
             border-radius: 20px;
             font-weight: 600;
             font-size: 0.9em;
-        }}
-        
-        .content-type-badge {{
-            padding: 4px 10px;
-            border-radius: 15px;
-            font-size: 0.8em;
-            font-weight: 500;
-            margin: 4px 0;
-            display: inline-block;
-        }}
-        
-        .content-type-faceless_voiceover {{
-            background: #dcfce7;
-            color: #16a34a;
-            border: 1px solid #86efac;
-        }}
-        
-        .content-type-compilation {{
-            background: #dbeafe;
-            color: #2563eb;
-            border: 1px solid #93c5fd;
-        }}
-        
-        .content-type-screen_recording {{
-            background: #fef3c7;
-            color: #d97706;
-            border: 1px solid #fcd34d;
-        }}
-        
-        .content-type-tutorial {{
-            background: #f3e8ff;
-            color: #9333ea;
-            border: 1px solid #c4b5fd;
-        }}
-        
-        .content-type-unknown {{
-            background: #f1f5f9;
-            color: #64748b;
-            border: 1px solid #cbd5e1;
-        }}
-        
-        .content-type-possibly_faceless {{
-            background: #fef3c7;
-            color: #f59e0b;
-            border: 1px solid #fbbf24;
-        }}
-        
-        .faceless-score {{
-            font-size: 0.75em;
-            opacity: 0.8;
-            margin-left: 5px;
-        }}
-        
-        .duration-badge {{
-            padding: 4px 10px;
-            border-radius: 15px;
-            font-size: 0.8em;
-            font-weight: 500;
-            margin: 4px 0;
-            display: inline-block;
-            background: #e0e7ff;
-            color: #3730a3;
-            border: 1px solid #a5b4fc;
-        }}
-        
-        .duration-badge.long-duration {{
-            background: #fef3c7;
-            color: #d97706;
-            border: 1px solid #fcd34d;
-        }}
-        
-        .channel-badges {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 6px;
-            align-items: center;
-            margin-top: 8px;
-        }}
-        
-        .filter-section {{
-            margin-bottom: 20px;
-            padding: 15px;
-            background: #f8fafc;
-            border-radius: 10px;
-            border: 1px solid #e2e8f0;
-        }}
-        
-        .filter-controls {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 15px;
-            align-items: center;
-        }}
-        
-        .filter-checkbox {{
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            cursor: pointer;
-            padding: 8px 12px;
-            background: white;
-            border: 1px solid #d1d5db;
-            border-radius: 8px;
-            transition: all 0.2s;
-        }}
-        
-        .filter-checkbox:hover {{
-            border-color: #f59e0b;
-            background: #fffbeb;
-        }}
-        
-        .filter-checkbox input[type="checkbox"] {{
-            margin: 0;
-            cursor: pointer;
-        }}
-        
-        .filter-label {{
-            font-weight: 500;
-            color: #374151;
         }}
         
         .channel-stats {{
@@ -2671,6 +2658,21 @@ class RequestHandler(BaseHTTPRequestHandler):
                 </button>
             </div>
             
+            <div class="duration-filter-section">
+                <div class="duration-filter-label">
+                    <span>⏱️ Min Video Duration:</span>
+                    <span id="durationValue" class="duration-value">40 min</span>
+                </div>
+                <input type="range" id="minDuration" class="duration-slider" 
+                       min="0" max="120" value="40" step="5"
+                       oninput="updateDurationLabel(this.value)">
+                <div class="duration-hints">
+                    <span>0 (no filter)</span>
+                    <span>Long-form (40m+)</span>
+                    <span>2h max</span>
+                </div>
+            </div>
+            
             <div class="suggestions-section">
                 <div class="suggestions-header">
                     <h3>💡 Need ideas? Try these niches:</h3>
@@ -2692,6 +2694,19 @@ class RequestHandler(BaseHTTPRequestHandler):
     <script>
         // Load initial suggestions
         loadSuggestions();
+        
+        function updateDurationLabel(value) {{
+            const label = document.getElementById('durationValue');
+            if (value == 0) {{
+                label.textContent = 'No filter';
+            }} else {{
+                label.textContent = value + ' min';
+            }}
+        }}
+        
+        function getMinDuration() {{
+            return parseInt(document.getElementById('minDuration').value) || 40;
+        }}
         
         async function loadSuggestions() {{
             const btn = document.getElementById('suggestBtn');
@@ -2753,7 +2768,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             resultCard.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
             
             try {{
-                const res = await fetch('/api/analyze?niche=' + encodeURIComponent(niche));
+                const minDuration = getMinDuration();
+                const res = await fetch('/api/analyze?niche=' + encodeURIComponent(niche) + '&min_duration=' + minDuration);
                 const data = await res.json();
                 
                 if (data.error) {{
@@ -2837,45 +2853,30 @@ class RequestHandler(BaseHTTPRequestHandler):
         
         function renderRisingStarChannels(channelData) {{
             if (!channelData || !channelData.success || !channelData.channels || channelData.channels.length === 0) {{
-                return '';
+                const analysis = channelData?.analysis || {{}};
+                const filterInfo = analysis.min_duration_filter ? 
+                    `<p style="color: #666;">No channels found with avg video duration ≥ ${{analysis.min_duration_filter}} minutes. Try lowering the duration filter.</p>` : '';
+                return filterInfo ? `<div class="rising-stars-section" style="padding: 20px; text-align: center;">${{filterInfo}}</div>` : '';
             }}
             
             const channels = channelData.channels || [];
+            const analysis = channelData.analysis || {{}};
+            const filteredCount = analysis.filtered_by_duration || 0;
+            const minDuration = analysis.min_duration_filter || 40;
+            
+            const filterNote = filteredCount > 0 ? 
+                `<div class="filter-note">⏱️ Filtered ${{filteredCount}} channels with avg duration < ${{minDuration}}m</div>` : '';
             
             return `
                 <div class="rising-stars-section">
                     <div class="rising-stars-header">
                         <div class="rising-stars-title">🌟 Rising Star Channels</div>
                         <div class="rising-stars-subtitle">Growing channels in this niche worth checking out</div>
-                    </div>
-                    <div class="filter-section">
-                        <div class="filter-label">🔍 Filter Channels:</div>
-                        <div class="filter-controls">
-                            <label class="filter-checkbox">
-                                <input type="checkbox" id="facelessFilter" onchange="filterChannels()">
-                                <span>🎭 Faceless Only (50%+)</span>
-                            </label>
-                            <label class="filter-checkbox">
-                                <input type="checkbox" id="compilationFilter" onchange="filterChannels()">
-                                <span>📋 Compilations</span>
-                            </label>
-                            <label class="filter-checkbox">
-                                <input type="checkbox" id="voiceoverFilter" onchange="filterChannels()">
-                                <span>🗣️ Voice-over</span>
-                            </label>
-                            <label class="filter-checkbox">
-                                <input type="checkbox" id="screenRecordingFilter" onchange="filterChannels()">
-                                <span>🖥️ Screen Recording</span>
-                            </label>
-                            <label class="filter-checkbox">
-                                <input type="checkbox" id="longVideoFilter" onchange="filterChannels()">
-                                <span>⏱️ Long Videos (20+ min)</span>
-                            </label>
-                        </div>
+                        ${{filterNote}}
                     </div>
                     <div class="channel-grid" id="channelGrid">
                         ${{channels.map(channel => `
-                            <div class="channel-card" onclick="window.open('${{channel.url}}', '_blank')" data-content-type="${{channel.content_type || 'unknown'}}" data-faceless-score="${{channel.faceless_score || 0}}" data-has-long-videos="${{channel.has_long_videos || false}}" data-avg-duration="${{channel.avg_duration_minutes || 0}}">
+                            <div class="channel-card" onclick="window.open('${{channel.url}}', '_blank')">
                                 <div class="channel-header">
                                     <a href="${{channel.url}}" target="_blank" class="channel-name" onclick="event.stopPropagation()">
                                         ${{channel.name}}
@@ -2884,17 +2885,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                                         ⭐ ${{Math.round(channel.rising_star_score)}}
                                     </div>
                                 </div>
-                                <div class="channel-badges">
-                                    <div class="content-type-badge content-type-${{channel.content_type || 'unknown'}}">
-                                        ${{getContentTypeLabel(channel.content_type)}}
-                                        ${{channel.faceless_score >= 50 ? `<span class="faceless-score">(${{channel.faceless_score}}%)</span>` : ''}}
+                                ${{channel.avg_duration_minutes > 0 ? `
+                                    <div class="duration-badge">
+                                        ⏱️ Avg: ${{Math.round(channel.avg_duration_minutes)}}m
                                     </div>
-                                    ${{channel.avg_duration_minutes && channel.avg_duration_minutes > 0 ? `
-                                        <div class="duration-badge ${{channel.has_long_videos ? 'long-duration' : ''}}">
-                                            ⏱️ Avg: ${{Math.round(channel.avg_duration_minutes)}}m
-                                        </div>
-                                    ` : ''}}
-                                </div>
+                                ` : ''}}
                                 <div class="channel-stats">
                                     <div class="channel-stat">
                                         <span class="stat-value">${{formatNumber(channel.subscribers)}}</span>
@@ -2920,68 +2915,6 @@ class RequestHandler(BaseHTTPRequestHandler):
             if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
             if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
             return num.toLocaleString();
-        }}
-        
-        function getContentTypeLabel(contentType) {{
-            const labels = {{
-                'faceless_voiceover': '🎭 Faceless',
-                'compilation': '📋 Compilation', 
-                'screen_recording': '🖥️ Screen Rec',
-                'tutorial': '📚 Tutorial',
-                'possibly_faceless': '🤔 Maybe Faceless',
-                'unknown': '❓ Unknown'
-            }};
-            return labels[contentType] || '❓ Unknown';
-        }}
-        
-        function filterChannels() {{
-            const facelessFilter = document.getElementById('facelessFilter').checked;
-            const compilationFilter = document.getElementById('compilationFilter').checked;
-            const voiceoverFilter = document.getElementById('voiceoverFilter').checked;
-            const screenRecordingFilter = document.getElementById('screenRecordingFilter').checked;
-            const longVideoFilter = document.getElementById('longVideoFilter').checked;
-            
-            const channelCards = document.querySelectorAll('.channel-card');
-            
-            channelCards.forEach(card => {{
-                const contentType = card.dataset.contentType;
-                const facelessScore = parseInt(card.dataset.facelessScore) || 0;
-                const hasLongVideos = card.dataset.hasLongVideos === 'true';
-                
-                let show = true;
-                
-                // If any filter is active, start with hide
-                if (facelessFilter || compilationFilter || voiceoverFilter || screenRecordingFilter || longVideoFilter) {{
-                    show = false;
-                    
-                    // Check faceless filter
-                    if (facelessFilter && facelessScore >= 50) {{
-                        show = true;
-                    }}
-                    
-                    // Check compilation filter
-                    if (compilationFilter && contentType === 'compilation') {{
-                        show = true;
-                    }}
-                    
-                    // Check voiceover filter
-                    if (voiceoverFilter && contentType === 'faceless_voiceover') {{
-                        show = true;
-                    }}
-                    
-                    // Check screen recording filter
-                    if (screenRecordingFilter && contentType === 'screen_recording') {{
-                        show = true;
-                    }}
-                    
-                    // Check long video filter
-                    if (longVideoFilter && hasLongVideos) {{
-                        show = true;
-                    }}
-                }}
-                
-                card.style.display = show ? 'block' : 'none';
-            }});
         }}
         
         function renderRecommendations(recommendations, originalScore) {{

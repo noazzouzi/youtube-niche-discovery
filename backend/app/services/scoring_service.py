@@ -14,6 +14,7 @@ from app.models.niche import Niche
 from app.models.metric import Metric
 from app.models.trend import Trend
 from app.core.config import settings
+from app.services.cpm_estimator import get_cpm_estimator, CPMEstimator
 
 logger = logging.getLogger(__name__)
 
@@ -43,33 +44,17 @@ class ScoringService:
     def __init__(self, session: AsyncSession):
         self.session = session
         
-        # PM Agent's CPM tiers (exact specification)
+        # Initialize the CPM estimator (uses comprehensive database with 70+ categories)
+        self.cpm_estimator = get_cpm_estimator()
+        
+        # CPM tiers for scoring (points based on CPM value)
+        # Uses real CPM data from the estimator instead of hardcoded values
         self.cpm_tiers = {
-            "tier_1": {
-                "min_cpm": 10.0, 
-                "points": 15, 
-                "niches": ["finance", "business", "marketing", "investing", "personal_finance"]
-            },
-            "tier_2": {
-                "min_cpm": 4.0, 
-                "points": 12, 
-                "niches": ["education", "tech", "science", "lifestyle", "health"]
-            },
-            "tier_3": {
-                "min_cpm": 2.0, 
-                "points": 9, 
-                "niches": ["beauty", "fashion", "gaming", "entertainment", "cooking", "travel"]
-            },
-            "tier_4": {
-                "min_cpm": 1.0, 
-                "points": 6, 
-                "niches": ["fitness", "bodybuilding"]
-            },
-            "tier_5": {
-                "min_cpm": 0.0, 
-                "points": 3, 
-                "niches": ["comedy", "music", "pranks"]
-            }
+            "tier_1": {"min_cpm": 10.0, "points": 15},  # Ultra-premium: Finance, Insurance, B2B
+            "tier_2": {"min_cpm": 6.0, "points": 12},   # Premium: Real Estate, Legal, VPN
+            "tier_3": {"min_cpm": 4.0, "points": 9},    # Moderate-high: Education, Tech, Health
+            "tier_4": {"min_cpm": 2.0, "points": 6},    # Moderate: Lifestyle, Cooking, Fitness
+            "tier_5": {"min_cpm": 0.0, "points": 3},    # Entertainment: Gaming, Comedy, Music
         }
     
     async def calculate_niche_score(self, niche_id: int) -> Dict[str, float]:
@@ -270,11 +255,11 @@ class ScoringService:
         3. MONETIZATION POTENTIAL (20 Points) - PM Agent Specification
         
         - CPM Rate Tier: 15 points
-          * $10+ CPM = 15 points (Finance, Business)
-          * $4-10 CPM = 12 points (Education, Tech)
-          * $2-4 CPM = 9 points (Lifestyle, Beauty)
-          * $1-2 CPM = 6 points (Gaming, Fitness)
-          * <$1 CPM = 3 points (Comedy, Music)
+          * $10+ CPM = 15 points (Finance, Insurance, B2B)
+          * $6-10 CPM = 12 points (Real Estate, Legal, VPN)
+          * $4-6 CPM = 9 points (Education, Tech, Health)
+          * $2-4 CPM = 6 points (Lifestyle, Gaming, Cooking)
+          * <$2 CPM = 3 points (Comedy, Music, Kids)
         
         - Brand Safety Score: 5 points
           * Family-friendly content = 5 points
@@ -282,6 +267,9 @@ class ScoringService:
           * Mature (non-explicit) = 3 points
           * Controversial = 2 points
           * Adult/explicit = 1 point
+        
+        Uses the comprehensive CPM database (70+ categories) with fuzzy matching.
+        Sources: Lenostube, Outlierkit, FirstGrowthAgency, SMBillion
         """
         try:
             cpm_score = 0.0
@@ -289,50 +277,69 @@ class ScoringService:
             
             # CPM Rate Tier (15 points max)
             cpm_metrics = [m for m in recent_metrics if m.metric_type == "estimated_cpm"]
+            
             if cpm_metrics:
                 cpm_value = cpm_metrics[0].value
-                if cpm_value >= 10.0:
-                    cpm_score = 15.0
-                elif cpm_value >= 4.0:
-                    cpm_score = 12.0
-                elif cpm_value >= 2.0:
-                    cpm_score = 9.0
-                elif cpm_value >= 1.0:
-                    cpm_score = 6.0
-                else:
-                    cpm_score = 3.0
             else:
-                # Estimate based on niche category using PM tiers
-                niche_category = niche.category.lower() if niche.category else ""
+                # Use the comprehensive CPM estimator for intelligent matching
+                niche_name = niche.name if niche.name else ""
+                niche_category = niche.category if niche.category else None
                 
-                for tier_name, tier_data in self.cpm_tiers.items():
-                    if any(niche_keyword in niche_category for niche_keyword in tier_data["niches"]):
-                        cpm_score = tier_data["points"]
-                        break
+                # Get CPM estimate from the database (no geographic/seasonal adjustment for scoring)
+                cpm_result = self.cpm_estimator.estimate_cpm(
+                    niche_name=niche_name,
+                    niche_category=niche_category,
+                    apply_seasonal=False,
+                    apply_geographic=False,
+                )
+                cpm_value = cpm_result.get("base_cpm", cpm_result.get("cpm", 3.5))
                 
-                if cpm_score == 0.0:
-                    cpm_score = 9.0  # Default to tier 3
+                # Log the match for debugging
+                logger.debug(f"CPM estimate for '{niche_name}': ${cpm_value:.2f} "
+                           f"(match: {cpm_result.get('match_type', 'unknown')}, "
+                           f"confidence: {cpm_result.get('confidence', 0):.0%})")
+            
+            # Calculate points from CPM value
+            if cpm_value >= 10.0:
+                cpm_score = 15.0
+            elif cpm_value >= 6.0:
+                cpm_score = 12.0
+            elif cpm_value >= 4.0:
+                cpm_score = 9.0
+            elif cpm_value >= 2.0:
+                cpm_score = 6.0
+            else:
+                cpm_score = 3.0
             
             # Brand Safety Score (5 points max)
             brand_safety_metrics = [m for m in recent_metrics if m.metric_type == "brand_safety_score"]
             if brand_safety_metrics:
                 brand_safety_value = brand_safety_metrics[0].value
-                # Assume value is 1-5 scale
                 brand_safety_score = min(brand_safety_value, 5.0)
             else:
                 # Estimate based on niche category
                 niche_category = niche.category.lower() if niche.category else ""
-                if any(keyword in niche_category for keyword in ["education", "finance", "health", "family"]):
-                    brand_safety_score = 5.0  # Family-friendly
-                elif any(keyword in niche_category for keyword in ["tech", "business", "lifestyle"]):
-                    brand_safety_score = 4.0  # General audience
-                elif any(keyword in niche_category for keyword in ["gaming", "entertainment"]):
-                    brand_safety_score = 3.0  # Mature
+                niche_name_lower = niche.name.lower() if niche.name else ""
+                combined = f"{niche_name_lower} {niche_category}"
+                
+                # Family-friendly indicators
+                if any(kw in combined for kw in ["education", "finance", "health", "family", "tutorial", "learning"]):
+                    brand_safety_score = 5.0
+                # General audience
+                elif any(kw in combined for kw in ["tech", "business", "lifestyle", "cooking", "travel", "fitness"]):
+                    brand_safety_score = 4.0
+                # Mature but safe
+                elif any(kw in combined for kw in ["gaming", "entertainment", "anime", "manga", "comedy"]):
+                    brand_safety_score = 3.5
+                # Potentially controversial
+                elif any(kw in combined for kw in ["politics", "news", "crypto", "controversy"]):
+                    brand_safety_score = 2.5
                 else:
                     brand_safety_score = 4.0  # Default general audience
             
             total_score = cpm_score + brand_safety_score
-            logger.debug(f"Monetization score: CPM {cpm_score}/15, Brand safety {brand_safety_score}/5, Total: {total_score}/20")
+            logger.debug(f"Monetization score: CPM {cpm_score}/15 (${cpm_value:.2f}), "
+                        f"Brand safety {brand_safety_score}/5, Total: {total_score}/20")
             return total_score
             
         except Exception as e:
@@ -432,15 +439,63 @@ class ScoringService:
         
         - Social Media Momentum: 5 points
           * Cross-platform growth, viral frequency, influencer adoption
+          
+        Direction-aware scoring:
+        - Rising trends get bonus points
+        - Falling trends get penalty
+        - Goal: 80→40 should score LOWER than 40→80
         """
         try:
             trend_analysis_score = 0.0
             social_momentum_score = 0.0
+            direction_adjustment = 0.0
+            
+            # Check for trend_direction metric (from Google Trends direction detection)
+            direction_metrics = [m for m in recent_metrics 
+                               if m.metric_name == "trend_direction" and m.metric_type == "trend_momentum"]
+            
+            trend_direction = 'stable'
+            direction_confidence = 50.0
+            period_change = 0.0
+            
+            if direction_metrics:
+                dm = direction_metrics[0]
+                # Decode direction from value: 1=rising, 0=stable, -1=falling
+                if dm.value > 0:
+                    trend_direction = 'rising'
+                elif dm.value < 0:
+                    trend_direction = 'falling'
+                
+                direction_confidence = dm.confidence_score or 50.0
+                
+                # Try to get more details from raw_data
+                if dm.raw_data:
+                    try:
+                        raw = json.loads(dm.raw_data) if isinstance(dm.raw_data, str) else dm.raw_data
+                        trend_direction = raw.get('direction', trend_direction)
+                        period_change = raw.get('period_change', 0.0)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
             
             # 12-Month Trend Analysis (10 points max)
             trend_metrics = [m for m in recent_metrics if m.metric_type == "yearly_growth_rate"]
+            
             if trend_metrics:
-                yoy_growth = trend_metrics[0].value  # Percentage
+                yoy_growth = trend_metrics[0].value
+            elif period_change != 0:
+                # Use period change from direction detection as proxy for growth
+                yoy_growth = period_change
+            else:
+                # Get historical data to calculate trend
+                yoy_growth = None
+                historical_trends = await self._get_historical_trends(niche_id, days_back=365)
+                if len(historical_trends) >= 2:
+                    recent_score = historical_trends[0].overall_score
+                    old_score = historical_trends[-1].overall_score
+                    if old_score > 0:
+                        yoy_growth = ((recent_score - old_score) / old_score) * 100
+            
+            if yoy_growth is not None:
                 if yoy_growth >= 50:
                     trend_analysis_score = 10.0
                 elif yoy_growth >= 20:
@@ -452,42 +507,38 @@ class ScoringService:
                 else:
                     trend_analysis_score = 2.0
             else:
-                # Get historical data to calculate trend
-                historical_trends = await self._get_historical_trends(niche_id, days_back=365)
-                if len(historical_trends) >= 2:
-                    recent_score = historical_trends[0].overall_score
-                    old_score = historical_trends[-1].overall_score
-                    if old_score > 0:
-                        growth_rate = ((recent_score - old_score) / old_score) * 100
-                        if growth_rate >= 50:
-                            trend_analysis_score = 10.0
-                        elif growth_rate >= 20:
-                            trend_analysis_score = 8.0
-                        elif growth_rate >= 0:
-                            trend_analysis_score = 6.0
-                        elif growth_rate >= -20:
-                            trend_analysis_score = 4.0
-                        else:
-                            trend_analysis_score = 2.0
-                    else:
-                        trend_analysis_score = 6.0
-                else:
-                    trend_analysis_score = 6.0  # Default neutral
+                trend_analysis_score = 6.0  # Default neutral
+            
+            # Apply direction adjustment (critical for 80→40 vs 40→80 differentiation)
+            # Rising trends get up to +2 bonus points
+            # Falling trends get up to -2 penalty points
+            confidence_factor = min(direction_confidence / 100, 1.0)
+            
+            if trend_direction == 'rising':
+                direction_adjustment = 2.0 * confidence_factor
+                logger.debug(f"Rising trend detected, adding {direction_adjustment:.1f} bonus points")
+            elif trend_direction == 'falling':
+                direction_adjustment = -2.0 * confidence_factor
+                logger.debug(f"Falling trend detected, applying {direction_adjustment:.1f} penalty points")
             
             # Social Media Momentum (5 points max)
             social_metrics = [m for m in recent_metrics if m.metric_type in [
                 "social_momentum_score", "viral_content_frequency", "influencer_adoption_rate"
             ]]
             if social_metrics:
-                # Average social momentum indicators
                 momentum_scores = [m.value for m in social_metrics]
                 avg_momentum = sum(momentum_scores) / len(momentum_scores)
-                social_momentum_score = min(avg_momentum / 20, 5.0)  # Normalize to 0-5 scale
+                social_momentum_score = min(avg_momentum / 20, 5.0)
             else:
                 social_momentum_score = 2.5  # Default middle
             
-            total_score = trend_analysis_score + social_momentum_score
-            logger.debug(f"Trend momentum score: 12-month {trend_analysis_score}/10, Social {social_momentum_score}/5, Total: {total_score}/15")
+            # Calculate total with direction adjustment, clamped to valid range
+            base_total = trend_analysis_score + social_momentum_score
+            total_score = max(0, min(15, base_total + direction_adjustment))
+            
+            logger.debug(f"Trend momentum score: 12-month {trend_analysis_score}/10, "
+                        f"Social {social_momentum_score}/5, Direction adj: {direction_adjustment:+.1f}, "
+                        f"Total: {total_score:.1f}/15 (dir: {trend_direction})")
             return total_score
             
         except Exception as e:

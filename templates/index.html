@@ -4,76 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>YouTube Niche Discovery</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-            margin: 0;
-        }
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
-        }
-        .header {
-            text-align: center;
-            color: white;
-            margin-bottom: 30px;
-        }
-        .header h1 {
-            font-size: 2.5em;
-            margin-bottom: 8px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
-        }
-        .card {
-            background: white;
-            border-radius: 16px;
-            padding: 30px;
-            margin-bottom: 20px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.15);
-        }
-        .search-section {
-            display: flex;
-            gap: 12px;
-            margin-bottom: 20px;
-        }
-        .search-input {
-            flex: 1;
-            padding: 16px 20px;
-            font-size: 1.1em;
-            border: 2px solid #e0e0e0;
-            border-radius: 12px;
-            outline: none;
-        }
-        .btn {
-            padding: 16px 28px;
-            font-size: 1em;
-            font-weight: 600;
-            border: none;
-            border-radius: 12px;
-            cursor: pointer;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-        }
-        .result-card {
-            display: none;
-        }
-        .result-card.visible {
-            display: block;
-        }
-        .loading {
-            text-align: center;
-            padding: 50px 20px;
-            color: #555;
-        }
-    </style>
+    <link rel="stylesheet" href="/static/css/style.css?v=20260206">
 </head>
 <body>
     <div class="container">
         <div class="header">
             <h1>🎯 YouTube Niche Discovery</h1>
-            <p>Find the best niches for your YouTube channel</p>
+            <p class="tagline">Find the best niches for your YouTube channel</p>
         </div>
         
         <div class="card">
@@ -81,13 +18,21 @@
                 <input type="text" class="search-input" id="nicheInput" 
                        placeholder="Enter a niche to analyze (e.g., 'AI tutorials', 'fitness tips')"
                        onkeypress="if(event.key==='Enter') analyzeNiche()">
-                <button class="btn" onclick="analyzeNiche()" id="analyzeBtn">
+                <button class="btn btn-primary" onclick="analyzeNiche()" id="analyzeBtn">
                     🔍 Analyze
                 </button>
             </div>
             
-            <div id="suggestionsGrid">
-                <p>Niche suggestions will load here...</p>
+            <div class="suggestions-section">
+                <div class="suggestions-header">
+                    <h3>💡 Try these niches:</h3>
+                    <button class="btn btn-secondary" onclick="loadSuggestions()" id="suggestBtn">
+                        🎲 More Ideas
+                    </button>
+                </div>
+                <div class="suggestions-grid" id="suggestionsGrid">
+                    <p class="loading-placeholder">Loading suggestions...</p>
+                </div>
             </div>
         </div>
         
@@ -96,66 +41,6 @@
         </div>
     </div>
     
-    <script>
-        async function analyzeNiche() {
-            const input = document.getElementById('nicheInput');
-            const niche = input.value.trim();
-            
-            if (!niche) {
-                alert('Please enter a niche to analyze');
-                return;
-            }
-            
-            const btn = document.getElementById('analyzeBtn');
-            const resultCard = document.getElementById('resultCard');
-            const resultContent = document.getElementById('resultContent');
-            
-            btn.disabled = true;
-            btn.innerHTML = '⏳ Analyzing...';
-            
-            resultCard.classList.add('visible');
-            resultContent.innerHTML = `
-                <div class="loading">
-                    <div>🔄 Analyzing "${niche}"</div>
-                    <p>This may take 10-20 seconds</p>
-                </div>
-            `;
-            
-            try {
-                const res = await fetch('/api/analyze?niche=' + encodeURIComponent(niche));
-                const data = await res.json();
-                
-                if (data.error) {
-                    resultContent.innerHTML = `<div>❌ ${data.error}</div>`;
-                    return;
-                }
-                
-                resultContent.innerHTML = `
-                    <div>
-                        <h2>Score: ${data.total_score} (${data.grade})</h2>
-                        <p>${data.recommendation}</p>
-                        <pre>${JSON.stringify(data, null, 2)}</pre>
-                    </div>
-                `;
-            } catch (err) {
-                resultContent.innerHTML = `<div>❌ Error: ${err.message}</div>`;
-            }
-            
-            btn.disabled = false;
-            btn.innerHTML = '🔍 Analyze';
-        }
-        
-        // Load suggestions on start
-        fetch('/api/suggestions')
-            .then(res => res.json())
-            .then(data => {
-                const grid = document.getElementById('suggestionsGrid');
-                grid.innerHTML = '<h3>💡 Try these niches:</h3>' +
-                    data.suggestions.map(cat => 
-                        `<div><strong>${cat.category}:</strong> ${cat.niches.join(', ')}</div>`
-                    ).join('');
-            })
-            .catch(console.error);
-    </script>
+    <script src="/static/js/app.js?v=20260206"></script>
 </body>
 </html>
